@@ -1,10 +1,13 @@
-from pydantic import Field
+import os
+import uuid
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    worker_id: str = "worker-1"
-    worker_host: str = "127.0.0.1"
+    worker_id: str = Field(...)
+
+    worker_host: str = "0.0.0.0"
     worker_port: int = 9000
 
     redis_url: str = Field(default="redis://localhost:6379/0")
@@ -18,6 +21,14 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
+
+    @field_validator("worker_id")
+    @classmethod
+    def validate_worker_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("worker_id must not be empty")
+        return normalized
 
 
 settings = Settings()
