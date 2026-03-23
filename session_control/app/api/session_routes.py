@@ -2,7 +2,11 @@ from fastapi import APIRouter, HTTPException
 
 from session_control.app.models.session import SessionRequest, SessionResponse
 from session_control.app.redis.redis_client import get_redis
-from session_control.app.services.session_service import SessionService, NoWorkerAvailableError
+from session_control.app.services.session_service import (
+    NoWorkerAvailableError,
+    SessionService,
+    WorkerAssignmentError,
+)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -16,6 +20,8 @@ async def create_session(request: SessionRequest) -> SessionResponse:
         return await service.create_session(request)
     except NoWorkerAvailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except WorkerAssignmentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/{session_id}")
