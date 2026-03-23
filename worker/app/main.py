@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 
 from worker.app.core.config import settings
 from worker.app.redis.redis_client import close_redis, init_redis, ping_redis
+from worker.app.redis.session_repository import SessionRepository
 from worker.app.redis.worker_repository import WorkerRepository
 from worker.app.services.worker_service import WorkerService
 
@@ -29,8 +30,9 @@ async def lifespan(app: FastAPI):
         logger.exception("Worker Redis ping failed during startup.")
         raise RuntimeError("Redis unavailable during worker startup") from exc
 
-    repository = WorkerRepository(redis_client)
-    service = WorkerService(repository)
+    worker_repository = WorkerRepository(redis_client)
+    session_repository = SessionRepository(redis_client)
+    service = WorkerService(worker_repository, session_repository)
 
     await service.register_worker()
     await service.start_heartbeat()

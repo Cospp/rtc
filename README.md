@@ -28,8 +28,17 @@ Der aktuelle Stand ist eine erste lauffähige Basis mit funktionaler Control Pla
 * Speicherung von Sessions in Redis (inkl. TTL)
 * Worker-Registrierung in Redis
 * Worker-Heartbeat (TTL-basierte Liveness)
+* Worker-Zuweisung aus workers:warm
 * Zuweisung von Sessions zu verfügbaren Workern
+* automatische Freigabe reservierter Worker bei abgelaufener Session
 
+
+### Offene Punkte: 
+
+* keine atomare Zuweisung der Worker
+* keine echte Stream-/UDP-Kopplung
+* kein Reconciliation-Loop außerhalb des Workers (globale prüfinstanz der serverintegrität)
+* Endpoint-Konfiguration noch grob
 ---
 
 ## Projektstruktur
