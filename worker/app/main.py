@@ -1,0 +1,61 @@
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+
+from worker.app.core.config import settings
+from worker.app.redis.redis_client import close_redis, init_redis, ping_redis
+from worker.app.redis.worker_repository import WorkerRepository
+from worker.app.services.worker_service import WorkerService
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting worker service...")
+
+    redis_client = await init_redis()
+
+    try:
+        redis_ok = await ping_redis()
+        logger.info("Worker Redis ping successful: %s", redis_ok)
+    except Exception as exc:
+        logger.exception("Worker Redis ping failed during startup.")
+        raise RuntimeError("Redis unavailable during worker startup") from exc
+
+    repository = WorkerRepository(redis_client)
+    service = WorkerService(repository)
+
+    await service.register_worker()
+    await service.start_heartbeat()
+
+    app.state.worker_service = service
+
+    yield
+
+    logger.info("Shutting down worker service...")
+    await service.stop_heartbeat()
+    await close_redis()
+
+
+app = FastAPI(title=f"worker-{settings.worker_id}", lifespan=lifespan)
+
+
+@app.get("/health")
+async def health() -> dict:
+    try:
+        redis_ok = await ping_redis()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}") from exc
+
+    return {
+        "worker_id": settings.worker_id,
+        "status": "ok",
+        "redis": redis_ok,
+    }
