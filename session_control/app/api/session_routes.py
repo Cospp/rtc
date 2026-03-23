@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from session_control.app.models.session import SessionRequest, SessionResponse
 from session_control.app.redis.redis_client import get_redis
-from session_control.app.services.session_service import SessionService
+from session_control.app.services.session_service import SessionService, NoWorkerAvailableError
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -11,7 +11,11 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 async def create_session(request: SessionRequest) -> SessionResponse:
     redis_client = await get_redis()
     service = SessionService(redis_client)
-    return await service.create_session(request)
+
+    try:
+        return await service.create_session(request)
+    except NoWorkerAvailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/{session_id}")

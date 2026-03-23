@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 from worker.app.core.config import settings
@@ -13,12 +14,18 @@ class WorkerService:
         self.repository = repository
         self._heartbeat_task: asyncio.Task | None = None
 
-    def build_worker_record(self, status: str = "warm") -> WorkerRecord:
+    def build_worker_record(
+        self,
+        status: str = "warm",
+        assigned_session_id: str | None = None,
+        endpoint: str | None = None,
+    ) -> WorkerRecord:
         return WorkerRecord(
             worker_id=settings.worker_id,
             status=status,
-            endpoint=f"{settings.worker_host}:{settings.worker_port}",
+            endpoint=endpoint or f"{settings.worker_host}:{settings.worker_port}",
             last_heartbeat=utc_now_iso(),
+            assigned_session_id=assigned_session_id,
         )
 
     async def register_worker(self) -> None:
@@ -34,12 +41,27 @@ class WorkerService:
 
     async def heartbeat_loop(self) -> None:
         while True:
-            worker = self.build_worker_record(status="warm")
+            existing_raw = await self.repository.get_worker(settings.worker_id)
+
+            if existing_raw is None:
+                # Falls der Key fehlt, initial wieder als warm anlegen
+                worker = self.build_worker_record(status="warm")
+            else:
+                existing = json.loads(existing_raw)
+
+                worker = self.build_worker_record(
+                    status=existing.get("status", "warm"),
+                    assigned_session_id=existing.get("assigned_session_id"),
+                    endpoint=existing.get("endpoint"),
+                )
+
             await self.repository.upsert_worker(worker)
 
             logger.info(
-                "Worker heartbeat | worker_id=%s",
+                "Worker heartbeat | worker_id=%s status=%s assigned_session_id=%s",
                 worker.worker_id,
+                worker.status,
+                worker.assigned_session_id,
             )
 
             await asyncio.sleep(settings.worker_heartbeat_interval_seconds)
