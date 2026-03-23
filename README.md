@@ -10,7 +10,7 @@ Der Fokus liegt aktuell auf dem Aufbau einer **sauberen Service-Struktur** und e
 
 ## Aktueller Stand
 
-Der aktuelle Stand ist eine erste lauffähige Basis.
+Der aktuelle Stand ist eine erste lauffähige Basis mit funktionaler Control Plane und Worker-Zuweisung.
 
 ### Vorhanden
 
@@ -21,6 +21,14 @@ Der aktuelle Stand ist eine erste lauffähige Basis.
 * Health Endpoint (`/health`)
 * Metrics Endpoint (`/metrics`, Prometheus-kompatibel)
 * Grundstruktur für weitere Komponenten (`worker`, `shared`)
+
+### Zusätzlich implementiert:
+
+* Session-Erstellung (POST /sessions)
+* Speicherung von Sessions in Redis (inkl. TTL)
+* Worker-Registrierung in Redis
+* Worker-Heartbeat (TTL-basierte Liveness)
+* Zuweisung von Sessions zu verfügbaren Workern
 
 ---
 
@@ -53,28 +61,31 @@ rtc/
 
 ## Komponenten (aktueller Zustand)
 
-### session_control
-
 Der aktuell implementierte Service.
 
-Verantwortung:
+### session_control
+
+Verantwortung
 
 * Starten des Systems
 * Redis-Verbindung initialisieren
 * Health-Status bereitstellen
-* Basis für zukünftige Session-Logik
+* Entgegennahme von Client-Anfragen
+* Erzeugung von Sessions
+* Auswahl eines freien Workers
+* Zuweisung von Sessions zu Workern
+* Speicherung von Session-Zuständen in Redis
 
 ---
 
 ### worker
 
-Strukturell vorbereitet, aber funktional noch nicht implementiert.
+Verantwortung
 
-Geplant:
-
-* Annahme von Streams
-* Verarbeitung von Sessions
-* Registrierung im System
+* Registrierung im System (Redis)
+* Periodischer Heartbeat (Liveness über TTL)
+* Bereitstellung eines Endpoints (zukünftig für Streaming)
+* Verwaltung des eigenen Zustands (warm, reserved)
 
 ---
 
@@ -83,7 +94,10 @@ Geplant:
 Wird aktuell verwendet für:
 
 * Verfügbarkeitsprüfung beim Startup
-* zukünftige Zustandsverwaltung (noch nicht implementiert)
+* Session-State (session:<id>)
+* Worker-State (worker:<id>)
+* Worker-Discovery (workers:warm Set)
+* TTL-basierte Liveness und automatische Bereinigung
 
 ---
 
@@ -94,18 +108,6 @@ Wird aktuell verwendet für:
 ```text
 GET /health
 ```
-
-Beispielantwort:
-
-```json
-{
-  "service": "session-control",
-  "status": "ok",
-  "redis": true
-}
-```
-
----
 
 ### Metrics
 
@@ -124,8 +126,23 @@ GET /metrics
 POST /sessions
 ```
 
-* aktuell nur Stub
-* noch keine Logik implementiert
+* Erzeugt eine neue Session und weist einen verfügbaren Worker zu.
+
+Beispiel Post: 
+{
+  "client_id": "client-1",
+  "stream_profile": "480p",
+  "transport": "udp"
+}
+
+Beispiel Response:
+{
+  "session_id": "...",
+  "client_id": "client-1",
+  "status": "assigned",
+  "worker_id": "worker-1",
+  "ttl_seconds": 60
+}
 
 ---
 
@@ -160,10 +177,11 @@ http://127.0.0.1:8000
 
 ## Nächste Schritte
 
-* Implementierung von Session-Logik (`POST /sessions`)
-* Speicherung von Zuständen in Redis
-* Worker-Registrierung
-* Zuweisung von Sessions zu Workern
+* Automatische Worker-Freigabe bei abgelaufenen Sessions
+* Atomare Worker-Reservation (z. B. via Redis Lua Script)
+* Einführung eines Reconciliation-Loops
+* Erweiterung der Worker-Zustandsmaschine (active, streaming, etc.)
+* Integration des tatsächlichen Streaming-Protokolls (UDP / WebRTC)
 
 ---
 
