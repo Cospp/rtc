@@ -2,199 +2,286 @@
 
 ## Überblick
 
-Dieses Projekt dient als Grundlage für eine Plattform zur Annahme und Verarbeitung von Echtzeit-Streams.
+Dieses Projekt implementiert eine experimentelle Plattform zur Annahme und Verarbeitung von Echtzeit-Streams.
 
-Der Fokus liegt aktuell auf dem Aufbau einer **sauberen Service-Struktur** und einer **lauffähigen Control Plane**, die später um Streaming- und Worker-Logik erweitert wird.
+Der Fokus liegt aktuell auf dem Aufbau einer zustandsbasierten Control Plane, die:
+
+- Clients Sessions zuweist
+- verfügbare Worker verwaltet
+- Worker atomar reserviert
+- inkonsistente Zustände selbständig bereinigt
+
+Die eigentliche Medienverarbeitung (UDP / WebRTC) ist aktuell noch nicht Bestandteil des Systems.
+
+---
+
+## Architektur
+
+Das System besteht aktuell aus drei zentralen Komponenten:
+
+- `session_control`
+- `worker`
+- `redis`
+
+Der grundlegende Datenfluss sieht derzeit so aus:
+
+    Client -> session_control -> Redis <- worker
+
+### Rollen
+
+#### session_control
+
+Die Control Plane.
+
+Verantwortung:
+- Entgegennahme von Session-Anfragen
+- Auswahl freier Worker
+- atomare Worker-Reservation
+- Speicherung von Session-Zuständen
+
+#### worker
+
+Die Worker-Komponente.
+
+Verantwortung:
+- Registrierung in Redis
+- periodischer Heartbeat
+- Verwaltung des eigenen Zustands
+- automatische Freigabe bei abgelaufenen Sessions
+
+#### redis
+
+Koordinations- und Zustandslayer.
+
+Wird aktuell verwendet für:
+- Session-State (`session:<id>`)
+- Worker-State (`worker:<id>`)
+- Worker-Discovery (`workers:warm`)
+- TTL-basierte Liveness
 
 ---
 
 ## Aktueller Stand
 
-Der aktuelle Stand ist eine erste lauffähige Basis mit funktionaler Control Plane und Worker-Zuweisung.
+Das System ist funktional lauffähig und implementiert bereits den vollständigen Worker-Lifecycle:
 
-### Vorhanden
+    warm -> reserved -> warm
 
-* `session_control` Service (FastAPI)
-* Startbarer Server (Uvicorn)
-* Redis-Anbindung
-* Startup-Validierung (Service startet nur, wenn Redis erreichbar ist)
-* Health Endpoint (`/health`)
-* Metrics Endpoint (`/metrics`, Prometheus-kompatibel)
-* Grundstruktur für weitere Komponenten (`worker`, `shared`)
+### Implementierte Funktionen
 
-### Zusätzlich implementiert:
+- `session_control` Service (FastAPI)
+- startbarer Server (Uvicorn)
+- Redis-Anbindung
+- Startup-Validierung (Service startet nur bei erreichbarem Redis)
+- Health Endpoint (`/health`)
+- Metrics Endpoint (`/metrics`)
+- Session-Erstellung (`POST /sessions`)
+- Speicherung von Sessions in Redis (inkl. TTL)
+- Worker-Registrierung
+- Worker-Heartbeat
+- Worker-Discovery über `workers:warm`
+- atomare Worker-Reservation via Redis Lua
+- automatische Freigabe reservierter Worker bei abgelaufenen Sessions
 
-* Session-Erstellung (POST /sessions)
-* Speicherung von Sessions in Redis (inkl. TTL)
-* Worker-Registrierung in Redis
-* Worker-Heartbeat (TTL-basierte Liveness)
-* Worker-Zuweisung aus workers:warm
-* Zuweisung von Sessions zu verfügbaren Workern
-* automatische Freigabe reservierter Worker bei abgelaufener Session
+---
 
+## Zentrale Konzepte
 
-### Offene Punkte: 
+### Worker Lifecycle
 
-* keine atomare Zuweisung der Worker
-* keine echte Stream-/UDP-Kopplung
-* kein Reconciliation-Loop außerhalb des Workers (globale prüfinstanz der serverintegrität)
-* Endpoint-Konfiguration noch grob
+    warm -> reserved -> warm
+
+- `warm`: Worker ist verfügbar
+- `reserved`: Worker ist einer Session zugewiesen
+- Rückkehr zu `warm`: erfolgt automatisch bei Ablauf der Session
+
+---
+
+### Atomare Worker-Reservation
+
+Die Zuweisung eines Workers erfolgt über ein Redis Lua Script.
+
+Ablauf:
+
+1. Worker wird aus `workers:warm` entfernt
+2. Worker-State wird geprüft (`status == warm`)
+3. Worker wird auf `reserved` gesetzt
+4. `assigned_session_id` wird gesetzt
+
+Die gesamte Operation erfolgt atomar innerhalb von Redis.
+
+Hinweis:
+Die Atomarität gilt aktuell nur auf Ebene einer einzelnen Redis-Instanz.
+
+---
+
+### Session-Modell
+
+Sessions repräsentieren einen Verarbeitungsauftrag.
+
+    session:<id> -> {
+      status: assigned,
+      worker_id: <worker_id>,
+      ...
+    }
+
+Eigenschaften:
+
+- Sessions besitzen eine TTL
+- Ablauf der TTL löscht den Session-Key automatisch
+- Worker erkennen den Verlust und geben sich frei
+
+---
+
+### Worker Self-Healing
+
+Worker prüfen im Heartbeat:
+
+    wenn status == reserved und session nicht existiert -> setze status = warm
+
+Damit werden inkonsistente Zustände automatisch bereinigt.
+
+---
+
+## Redis-Struktur
+
+### Session
+
+    session:<session_id>
+
+### Worker
+
+    worker:<worker_id>
+
+### Worker-Pool
+
+    workers:warm
+
+Set mit verfügbaren Workern.
+
+---
+
+## API
+
+### Session erstellen
+
+    POST /sessions
+
+Request:
+
+    {
+      "client_id": "client-1",
+      "stream_profile": "480p",
+      "transport": "udp"
+    }
+
+Response:
+
+    {
+      "session_id": "...",
+      "client_id": "client-1",
+      "status": "assigned",
+      "worker_id": "worker-1",
+      "ttl_seconds": 60
+    }
+
+---
+
+### Health
+
+    GET /health
+
+---
+
+### Metrics
+
+    GET /metrics
+
+Prometheus-kompatibel (aktuell Standardmetriken).
+
 ---
 
 ## Projektstruktur
 
-```text
-rtc/
-  session_control/
-    app/
-      api/
-      core/
-      redis/
-      services/
-      models/
-      main.py
+    rtc/
+      session_control/
+        app/
+          api/
+          core/
+          redis/
+          services/
+          models/
+          main.py
 
-  worker/
-    app/
-      network/
-      redis/
-      services/
-      models/
-      core/
-      main.py
+      worker/
+        app/
+          network/
+          redis/
+          services/
+          models/
+          core/
+          main.py
 
-  docs/
-```
-
----
-
-## Komponenten (aktueller Zustand)
-
-Der aktuell implementierte Service.
-
-### session_control
-
-Verantwortung
-
-* Starten des Systems
-* Redis-Verbindung initialisieren
-* Health-Status bereitstellen
-* Entgegennahme von Client-Anfragen
-* Erzeugung von Sessions
-* Auswahl eines freien Workers
-* Zuweisung von Sessions zu Workern
-* Speicherung von Session-Zuständen in Redis
-
----
-
-### worker
-
-Verantwortung
-
-* Registrierung im System (Redis)
-* Periodischer Heartbeat (Liveness über TTL)
-* Bereitstellung eines Endpoints (zukünftig für Streaming)
-* Verwaltung des eigenen Zustands (warm, reserved)
-
----
-
-### Redis
-
-Wird aktuell verwendet für:
-
-* Verfügbarkeitsprüfung beim Startup
-* Session-State (session:<id>)
-* Worker-State (worker:<id>)
-* Worker-Discovery (workers:warm Set)
-* TTL-basierte Liveness und automatische Bereinigung
-
----
-
-## Endpunkte
-
-### Health
-
-```text
-GET /health
-```
-
-### Metrics
-
-```text
-GET /metrics
-```
-
-* Prometheus-kompatibler Endpoint
-* aktuell nur Default-Metriken
-
----
-
-### Sessions (Placeholder)
-
-```text
-POST /sessions
-```
-
-* Erzeugt eine neue Session und weist einen verfügbaren Worker zu.
-
-Beispiel Post: 
-{
-  "client_id": "client-1",
-  "stream_profile": "480p",
-  "transport": "udp"
-}
-
-Beispiel Response:
-{
-  "session_id": "...",
-  "client_id": "client-1",
-  "status": "assigned",
-  "worker_id": "worker-1",
-  "ttl_seconds": 60
-}
+      docs/
 
 ---
 
 ## Voraussetzungen
 
-* Python 3.11
-* Redis (lokal oder Docker)
+- Python 3.11
+- Redis
 
-Redis starten (Beispiel mit Docker):
+Redis lokal starten:
 
-```bash
-docker run -p 6379:6379 redis:7
-```
+    docker run -p 6379:6379 redis:7
 
 ---
 
 ## Starten
 
-Im Projektroot:
+### session_control
 
-```bash
-python -m uvicorn session_control.app.main:app
-```
+    python -m uvicorn session_control.app.main:app
 
-Dann erreichbar unter:
+---
 
-```text
-http://127.0.0.1:8000
-```
+### worker
+
+    python -m uvicorn worker.app.main:app --port 9000
+
+---
+
+## Aktuelle Einschränkungen
+
+1. Keine echte Medienverarbeitung  
+   (kein UDP / WebRTC)
+
+2. Atomarität ist Redis-instanzlokal  
+   (Lua basiert auf Single-Instance-Modell)
+
+3. Kein zentraler Reconciliation-Loop  
+   (nur Worker-internes Self-Healing)
+
+4. Endpoint-Konfiguration noch lokal  
+   (`127.0.0.1` statt Service Discovery)
+
+5. Zustandsmaschine minimal  
+   (nur `warm`, `reserved`)
 
 ---
 
 ## Nächste Schritte
 
-* Automatische Worker-Freigabe bei abgelaufenen Sessions
-* Atomare Worker-Reservation (z. B. via Redis Lua Script)
-* Einführung eines Reconciliation-Loops
-* Erweiterung der Worker-Zustandsmaschine (active, streaming, etc.)
-* Integration des tatsächlichen Streaming-Protokolls (UDP / WebRTC)
+- Dockerisierung der Services
+- docker-compose Setup
+- Vorbereitung für Kubernetes
+- UDP-basierte Verarbeitung im Worker
+- später WebRTC (ICE / STUN / TURN)
 
 ---
 
 ## Hinweise
 
 Dieses Projekt wird iterativ entwickelt.
-Die Dokumentation beschreibt den aktuellen Stand und wird mit der Implementierung erweitert.
+
+Die Dokumentation beschreibt den aktuellen Implementierungsstand und wird fortlaufend erweitert.
