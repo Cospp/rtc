@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     worker_host: str = "0.0.0.0"
     worker_port: int = 9000
 
-    redis_url: str = Field(default="redis://localhost:6379/0")
+    redis_url: str = Field(default="redis://redis:6379/0")
     redis_connect_timeout_seconds: float = 2.0
 
     worker_ttl_seconds: int = 15
