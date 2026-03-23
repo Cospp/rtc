@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     redis_connect_timeout_seconds: float = 2.0
 
     session_ttl_seconds: int = 60
+    worker_ttl_seconds: int = 15
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

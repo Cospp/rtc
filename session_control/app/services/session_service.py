@@ -1,6 +1,7 @@
 import logging
 
 from redis.asyncio import Redis
+from redis.exceptions import ResponseError
 
 from session_control.app.core.config import settings
 from session_control.app.models.session import (
@@ -8,9 +9,8 @@ from session_control.app.models.session import (
     SessionResponse,
     build_session_record,
 )
-from session_control.app.models.worker import WorkerRecord
+from session_control.app.redis.assignment_repository import AssignmentRepository
 from session_control.app.redis.session_repository import SessionRepository
-from session_control.app.redis.worker_repository import WorkerRepository
 
 logger = logging.getLogger(__name__)
 
@@ -19,29 +19,37 @@ class NoWorkerAvailableError(Exception):
     pass
 
 
+class WorkerAssignmentError(Exception):
+    pass
+
+
 class SessionService:
     def __init__(self, redis_client: Redis) -> None:
         self.redis = redis_client
         self.session_repository = SessionRepository(redis_client)
-        self.worker_repository = WorkerRepository(redis_client)
+        self.assignment_repository = AssignmentRepository(redis_client)
 
     async def create_session(self, request: SessionRequest) -> SessionResponse:
-        warm_worker_ids = await self.worker_repository.get_warm_worker_ids()
-        if not warm_worker_ids:
-            raise NoWorkerAvailableError("No warm workers available")
-
-        selected_worker_id = warm_worker_ids[0]
-        worker = await self.worker_repository.get_worker(selected_worker_id)
-
-        if worker is None:
-            raise NoWorkerAvailableError("Selected worker no longer exists")
-
         session = build_session_record(request)
         session.status = "assigned"
-        session.worker_id = worker.worker_id
 
-        worker.status = "reserved"
-        worker.assigned_session_id = session.session_id
+        try:
+            worker_id, _worker_payload = await self.assignment_repository.assign_worker_to_session(
+                session_id=session.session_id,
+                worker_ttl_seconds=settings.worker_ttl_seconds,
+            )
+        except ResponseError as exc:
+            message = str(exc)
+
+            if "NO_WARM_WORKER" in message:
+                raise NoWorkerAvailableError("No warm workers available") from exc
+
+            if "WORKER_NOT_FOUND" in message or "WORKER_NOT_WARM" in message:
+                raise WorkerAssignmentError(message) from exc
+
+            raise
+
+        session.worker_id = worker_id
 
         await self.session_repository.save_session(
             session_id=session.session_id,
@@ -49,13 +57,8 @@ class SessionService:
             ttl_seconds=settings.session_ttl_seconds,
         )
 
-        await self.worker_repository.save_worker(
-            worker=worker,
-            ttl_seconds=settings.session_ttl_seconds,
-        )
-
         logger.info(
-            "Session assigned | session_id=%s client_id=%s worker_id=%s",
+            "Session assigned atomically | session_id=%s client_id=%s worker_id=%s",
             session.session_id,
             session.client_id,
             session.worker_id,
