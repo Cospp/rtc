@@ -36,7 +36,6 @@ class SessionService:
         try:
             worker_id, _worker_payload = await self.assignment_repository.assign_worker_to_session(
                 session_id=session.session_id,
-                worker_ttl_seconds=settings.worker_ttl_seconds,
             )
         except ResponseError as exc:
             message = str(exc)
