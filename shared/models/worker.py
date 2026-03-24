@@ -1,14 +1,19 @@
-from datetime import datetime, timezone
 from typing import Literal
-
+from enum import Enum
 from pydantic import BaseModel
-
-
-WorkerStatus = Literal["starting", "warm", "reserved", "active", "dead"]
+from datetime import datetime, timezone
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class WorkerStatus(str, Enum):
+    STARTING = "starting"
+    WARM = "warm"
+    RESERVED = "reserved"
+    ACTIVE = "active"
+    DEAD = "dead"
 
 
 class WorkerRecord(BaseModel):
