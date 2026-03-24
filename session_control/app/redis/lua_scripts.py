@@ -27,5 +27,5 @@ worker["assigned_session_id"] = session_id
 local updated_worker_payload = cjson.encode(worker)
 redis.call("SET", worker_key, updated_worker_payload, "KEEPTTL")
 
-return {worker_id, updated_worker_payload}
+return worker_id
 """

@@ -34,7 +34,7 @@ class SessionService:
         session.status = "assigned"
 
         try:
-            worker_id, _worker_payload = await self.assignment_repository.assign_worker_to_session(
+            worker_id = await self.assignment_repository.assign_worker_to_session(
                 session_id=session.session_id,
             )
         except ResponseError as exc:
