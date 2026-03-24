@@ -19,7 +19,6 @@ class AssignmentRepository:
             1,
             "workers:warm",
             session_id,
-            worker_ttl_seconds,
         )
 
         worker_id = result[0]

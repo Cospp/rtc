@@ -2,7 +2,6 @@ ASSIGN_WORKER_TO_SESSION_LUA = """
 local warm_set_key = KEYS[1]
 
 local session_id = ARGV[1]
-local worker_ttl = tonumber(ARGV[2])
 
 local worker_id = redis.call("SPOP", warm_set_key)
 if not worker_id then
