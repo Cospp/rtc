@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: rtc
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: rtc-worker:dev
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: REDIS_URL
+              value: redis://redis:6379/0
+
+            - name: WORKER_PORT
+              value: "9000"
+
+            # 🔥 WICHTIG: dynamische Worker-ID
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          ports:
+            - containerPort: 9000
