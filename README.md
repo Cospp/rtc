@@ -23,15 +23,13 @@ Das System besteht aktuell aus drei zentralen Komponenten:
 - `worker`
 - `redis`
 
-Der grundlegende Datenfluss sieht derzeit so aus:
+Der grundlegende Datenfluss:
 
     Client -> session_control -> Redis <- worker
 
 ### Rollen
 
 #### session_control
-
-Die Control Plane.
 
 Verantwortung:
 - Entgegennahme von Session-Anfragen
@@ -40,8 +38,6 @@ Verantwortung:
 - Speicherung von Session-Zuständen
 
 #### worker
-
-Die Worker-Komponente.
 
 Verantwortung:
 - Registrierung in Redis
@@ -53,7 +49,7 @@ Verantwortung:
 
 Koordinations- und Zustandslayer.
 
-Wird aktuell verwendet für:
+Verwendung:
 - Session-State (`session:<id>`)
 - Worker-State (`worker:<id>`)
 - Worker-Discovery (`workers:warm`)
@@ -63,16 +59,17 @@ Wird aktuell verwendet für:
 
 ## Aktueller Stand
 
-Das System ist funktional lauffähig und implementiert bereits den vollständigen Worker-Lifecycle:
+Das System ist funktional lauffähig und implementiert den vollständigen Worker-Lifecycle:
 
     warm -> reserved -> warm
 
-### Implementierte Funktionen
+---
+
+## Implementierte Funktionen
 
 - `session_control` Service (FastAPI)
-- startbarer Server (Uvicorn)
 - Redis-Anbindung
-- Startup-Validierung (Service startet nur bei erreichbarem Redis)
+- Startup-Validierung (Start nur bei erreichbarem Redis)
 - Health Endpoint (`/health`)
 - Metrics Endpoint (`/metrics`)
 - Session-Erstellung (`POST /sessions`)
@@ -108,21 +105,15 @@ Ablauf:
 3. Worker wird auf `reserved` gesetzt
 4. `assigned_session_id` wird gesetzt
 
-Die gesamte Operation erfolgt atomar innerhalb von Redis.
-
-Hinweis:
-Die Atomarität gilt aktuell nur auf Ebene einer einzelnen Redis-Instanz.
+Die gesamte Operation erfolgt atomar innerhalb von Redis (Single-Instance-Annahme).
 
 ---
 
 ### Session-Modell
 
-Sessions repräsentieren einen Verarbeitungsauftrag.
-
     session:<id> -> {
       status: assigned,
-      worker_id: <worker_id>,
-      ...
+      worker_id: <worker_id>
     }
 
 Eigenschaften:
@@ -138,8 +129,6 @@ Eigenschaften:
 Worker prüfen im Heartbeat:
 
     wenn status == reserved und session nicht existiert -> setze status = warm
-
-Damit werden inkonsistente Zustände automatisch bereinigt.
 
 ---
 
@@ -181,7 +170,7 @@ Response:
       "session_id": "...",
       "client_id": "client-1",
       "status": "assigned",
-      "worker_id": "worker-1",
+      "worker_id": "worker-xyz",
       "ttl_seconds": 60
     }
 
@@ -205,78 +194,203 @@ Prometheus-kompatibel (aktuell Standardmetriken).
 
     rtc/
       session_control/
-        app/
-          api/
-          core/
-          redis/
-          services/
-          models/
-          main.py
-
       worker/
-        app/
-          network/
-          redis/
-          services/
-          models/
-          core/
-          main.py
-
+      deploy/
       docs/
+      docker-compose.yml
 
 ---
 
 ## Voraussetzungen
 
-- Python 3.11
-- Redis
+- Docker
+- Docker Compose
 
-Redis lokal starten:
+Prüfen:
+
+    docker --version
+    docker compose version
+
+---
+
+## Schnellstart mit Docker Compose (empfohlen)
+
+Das System wird vollständig über Docker Compose gestartet.
+
+### Start
+
+Im Projekt-Root:
+
+    docker compose up --build
+
+Im Hintergrund:
+
+    docker compose up --build -d
+
+### Stoppen
+
+    docker compose down
+
+Mit Entfernen des Laufzeit-Zustands:
+
+    docker compose down -v
+
+---
+
+## Services (Compose)
+
+Das Compose-Setup startet:
+
+- `redis`
+- `session_control`
+- `worker-1`
+- `worker-2`
+- `worker-3`
+
+Interne Kommunikation erfolgt über Service-DNS (z. B. `redis`).
+
+---
+
+## Erreichbarkeit
+
+Nach dem Start ist `session_control` erreichbar unter:
+
+    http://localhost:8000
+
+---
+
+## Funktionstest
+
+### Session anlegen
+
+    curl -X POST http://localhost:8000/sessions -H "Content-Type: application/json" -d "{\"client_id\":\"client-1\",\"stream_profile\":\"480p\",\"transport\":\"udp\"}"
+
+Mehrfach ausführen:
+
+- 3 Requests: erfolgreich, jeweils anderer `worker_id`
+- 4. Request: Fehler
+
+      No warm workers available
+
+Nach Ablauf der Session-TTL werden Worker automatisch wieder freigegeben.
+
+---
+
+## Redis-Status prüfen
+
+In Redis einloggen:
+
+    docker compose exec redis redis-cli
+
+Verfügbare Worker:
+
+    SMEMBERS workers:warm
+
+Worker-Status:
+
+    GET worker:worker-1
+    GET worker:worker-2
+    GET worker:worker-3
+
+Session prüfen:
+
+    GET session:<session_id>
+
+TTL prüfen:
+
+    TTL session:<session_id>
+
+Interpretation:
+
+- TTL > 0: Session aktiv
+- TTL = -2: Session existiert nicht mehr (abgelaufen/gelöscht)
+
+---
+
+## Logs
+
+Alle Logs:
+
+    docker compose logs -f
+
+Einzelne Services:
+
+    docker compose logs -f session-control
+    docker compose logs -f worker-1
+    docker compose logs -f worker-2
+    docker compose logs -f worker-3
+    docker compose logs -f redis
+
+---
+
+## Optional: manueller Start ohne Compose
+
+Nur für Debugging-Zwecke.
+
+### Redis
 
     docker run -p 6379:6379 redis:7
 
----
-
-## Starten
-
 ### session_control
 
-    python -m uvicorn session_control.app.main:app
-
----
+    set REDIS_URL=redis://localhost:6379/0
+    uvicorn session_control.app.main:app --host 0.0.0.0 --port 8000
 
 ### worker
 
-    python -m uvicorn worker.app.main:app --port 9000
+    set REDIS_URL=redis://localhost:6379/0
+    set WORKER_ID=worker-1
+    set WORKER_PORT=9000
+    uvicorn worker.app.main:app --host 0.0.0.0 --port 9000
+
+---
+
+## Wichtige Hinweise
+
+### Netzwerkverhalten
+
+| Kontext | Redis Host |
+|--------|-----------|
+| Lokal (Python) | localhost |
+| Docker Compose | redis |
+| Kubernetes | redis |
+
+---
+
+### Worker ID
+
+- Muss eindeutig sein
+- Wird per Environment Variable gesetzt
+- In orchestrierten Umgebungen (z. B. Kubernetes) durch die Runtime vergeben
+
+---
+
+### Häufige Fehler
+
+- Verwendung von `localhost` innerhalb von Containern
+- falsche Redis-URL je nach Umgebung
+- nicht gebaute Images bei Compose (`--build` vergessen)
+- mehrere Redis-Instanzen parallel aktiv
 
 ---
 
 ## Aktuelle Einschränkungen
 
-1. Keine echte Medienverarbeitung  
-   (kein UDP / WebRTC)
-
-2. Atomarität ist Redis-instanzlokal  
-   (Lua basiert auf Single-Instance-Modell)
-
-3. Kein zentraler Reconciliation-Loop  
-   (nur Worker-internes Self-Healing)
-
-4. Endpoint-Konfiguration noch lokal  
-   (`127.0.0.1` statt Service Discovery)
-
-5. Zustandsmaschine minimal  
-   (nur `warm`, `reserved`)
+1. Keine Medienverarbeitung (kein UDP / WebRTC)
+2. Redis Single-Instance
+3. Kein globaler Reconciliation-Loop
+4. Service Discovery abhängig von Umgebung (`localhost` vs. `redis`)
+5. Minimaler Zustandsautomat (`warm`, `reserved`)
 
 ---
 
 ## Nächste Schritte
 
-- Dockerisierung der Services
-- docker-compose Setup
-- Vorbereitung für Kubernetes
-- UDP-basierte Verarbeitung im Worker
-- später WebRTC (ICE / STUN / TURN)
+- Kubernetes Deployment (z. B. k3d)
+- Service Discovery über Kubernetes Services
+- Ingest / Relay Layer
+- UDP-basierte Verarbeitung
+- spätere WebRTC Integration
 
 ---
 
@@ -284,4 +398,8 @@ Redis lokal starten:
 
 Dieses Projekt wird iterativ entwickelt.
 
-Die Dokumentation beschreibt den aktuellen Implementierungsstand und wird fortlaufend erweitert.
+Der Fokus liegt aktuell auf:
+
+- klarer Trennung von Control Plane und Worker
+- deterministischem Worker-Management
+- konsistentem Zustandsmodell
