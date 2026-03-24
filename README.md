@@ -1,5 +1,28 @@
 # RTC Streaming Plattform
 
+## Inhaltsverzeichnis
+
+* [Überblick](#überblick)
+* [Architektur](#architektur)
+* [Rollen](#rollen)
+* [Systemeigenschaften](#systemeigenschaften)
+* [Aktueller Stand](#aktueller-stand)
+* [Implementierte Funktionen](#implementierte-funktionen)
+* [Zentrale Konzepte](#zentrale-konzepte)
+* [Redis-Struktur](#redis-struktur)
+* [Projektstruktur](#projektstruktur)
+* [Quickstart (empfohlen)](#quickstart-empfohlen)
+* [Quickstart (Docker Compose)](#quickstart-docker-compose)
+* [API testen (Swagger UI)](#api-testen-swagger-ui)
+* [Redis Debugging](#redis-debugging)
+* [Lokaler Start (ohne Docker)](#lokaler-start-ohne-docker)
+* [Kubernetes (k3d)](#kubernetes-k3d)
+* [Wichtige Hinweise](#wichtige-hinweise)
+* [Aktuelle Einschränkungen](#aktuelle-einschränkungen)
+* [Nächste Schritte](#nächste-schritte)
+
+---
+
 ## Überblick
 
 Dieses Projekt implementiert eine experimentelle Plattform zur Annahme und Verarbeitung von Echtzeit-Streams.
@@ -72,6 +95,16 @@ Verwendung:
 
 ---
 
+## Systemeigenschaften
+
+* Stateless Control Plane (`session_control`)
+* Ephemere Worker mit Self-Healing
+* Redis als zentraler Zustandsspeicher
+* deterministische Zustandsübergänge
+* TTL-basierte Konsistenz
+
+---
+
 ## Aktueller Stand
 
 Das System ist funktional lauffähig und implementiert den vollständigen Worker-Lifecycle:
@@ -106,10 +139,6 @@ warm -> reserved -> warm
 warm -> reserved -> warm
 ```
 
-* `warm`: Worker ist verfügbar
-* `reserved`: Worker ist einer Session zugewiesen
-* Rückkehr zu `warm`: erfolgt automatisch durch Worker (Heartbeat + Session-TTL)
-
 ---
 
 ### Atomare Worker-Reservation
@@ -121,8 +150,6 @@ Die Zuweisung erfolgt über ein Redis Lua Script:
 3. Worker wird auf `reserved` gesetzt
 4. `assigned_session_id` wird gesetzt
 
-Die Operation ist atomar innerhalb von Redis.
-
 ---
 
 ### Session-Modell
@@ -133,12 +160,6 @@ session:<id> -> {
   worker_id: <worker_id>
 }
 ```
-
-Eigenschaften:
-
-* Sessions besitzen eine TTL
-* Ablauf löscht den Session-Key automatisch
-* Worker erkennen fehlende Sessions und geben sich frei
 
 ---
 
@@ -155,35 +176,19 @@ wenn status == reserved und session nicht existiert:
 
 ### TTL Ownership
 
-* **Worker ist alleiniger Owner des Worker-TTL**
-* `session_control` verändert Worker-State **ohne TTL zu setzen**
-* Redis Lua Script verwendet `KEEPTTL`
-
-→ verhindert konkurrierende TTL-Updates
+* Worker besitzt die TTL
+* `session_control` verändert State ohne TTL
+* Lua Script nutzt `KEEPTTL`
 
 ---
 
 ## Redis-Struktur
 
-### Session
-
 ```
 session:<session_id>
-```
-
-### Worker
-
-```
 worker:<worker_id>
-```
-
-### Worker-Pool
-
-```
 workers:warm
 ```
-
-Set mit aktuell verfügbaren Workern.
 
 ---
 
@@ -194,211 +199,158 @@ rtc/
   session_control/
   worker/
   shared/
-    models/
-      worker.py
+  scripts/
+  k8s/
   docs/
-  docker-compose.yml
 ```
 
 ---
 
-## Quickstart (Docker Compose – empfohlen)
+## Quickstart (empfohlen)
 
-### Start
+### Kubernetes (ein Command)
 
+```bash
+./scripts/dev.sh
 ```
+
+Dieser Workflow:
+
+* bereinigt alte Zustände
+* baut Images
+* erstellt Cluster
+* deployt System
+
+---
+
+## Quickstart (Docker Compose)
+
+```bash
 docker compose up --build
 ```
 
----
+Stop:
 
-### Stop
-
-```
+```bash
 docker compose down
 ```
 
 ---
 
-### Clean Restart
-
-```
-docker compose down -v --remove-orphans
-docker compose up --build
-```
-
----
-
-## Test
-
-
 ## API testen (Swagger UI)
 
-Die einfachste Möglichkeit, das System zu testen, ist über die automatisch generierte API-Dokumentation:
+Docker Compose:
 
-    http://localhost:8000/docs
+```
+http://localhost:8000/docs
+```
 
-Dort können Requests direkt im Browser ausgeführt werden.
+Kubernetes:
 
-### Beispiel: Session erstellen
-
-1. Endpoint `POST /sessions` auswählen
-2. "Try it out" klicken
-3. Request Body einfügen:
-
-    {
-      "client_id": "client-1",
-      "stream_profile": "480p",
-      "transport": "udp"
-    }
-
-4. "Execute" klicken
-
-Erwartung:
-
-- Die ersten Requests werden erfolgreich einem Worker zugewiesen
-- Sobald alle Worker reserviert sind:
-  → Response: `No warm workers available`
-
-Swagger eignet sich besonders für:
-
-- schnelles Debugging
-- manuelles Testen
-- Exploration der API
-
----
-
-## Alternative: curl
-
-Für automatisierte Tests oder Skripting kann weiterhin curl verwendet werden:
-
-    curl -X POST http://localhost:8000/sessions \
-      -H "Content-Type: application/json" \
-      -d "{\"client_id\":\"client-1\",\"stream_profile\":\"480p\",\"transport\":\"udp\"}"
-
-Erwartetes Verhalten:
-
-* 3 Requests → erfolgreich (bei 3 Workern)
-* weiterer Request → `No warm workers available`
+```
+http://localhost:8080/docs
+```
 
 ---
 
 ## Redis Debugging
 
-```
+```bash
 docker compose exec redis redis-cli
 ```
 
-### Warm Pool
-
+```bash
+kubectl exec -n rtc -it deployment/redis -- redis-cli
 ```
-SMEMBERS workers:warm
-```
-
-### Worker
-
-```
-GET worker:worker-1
-TTL worker:worker-1
-```
-
-### Session
-
-```
-GET session:<session_id>
-```
-
 ---
 
 ## Lokaler Start (ohne Docker)
 
-Redis starten:
+Redis:
 
-```
+```bash
 docker run -p 6379:6379 redis:7
 ```
 
 ---
 
-### session_control
+## Kubernetes (k3d)
 
-```
-set REDIS_URL=redis://localhost:6379/0
-uvicorn session_control.app.main:app --host 0.0.0.0 --port 8000
+### Voraussetzungen
+
+* Docker
+* kubectl
+* k3d
+* Git Bash
+
+---
+
+### Schnellstart
+
+```bash
+./scripts/dev.sh
 ```
 
 ---
 
-### worker
+### Zugriff
 
 ```
-set REDIS_URL=redis://localhost:6379/0
-set WORKER_ID=worker-1
-set WORKER_PORT=9000
+http://localhost:8080/docs
+```
 
-uvicorn worker.app.main:app --host 0.0.0.0 --port 9000
+---
+
+### Komponenten
+
+* redis
+* session-control
+* worker
+
+---
+
+### Manifeste
+
+```
+k8s/
+```
+
+---
+
+### Dokumentation
+
+```
+docs/kubernetes.md
 ```
 
 ---
 
 ## Wichtige Hinweise
 
-### Netzwerkverhalten
+### Netzwerk
 
-| Kontext    | Redis Host |
-| ---------- | ---------- |
-| Lokal      | localhost  |
-| Docker     | redis      |
-| Kubernetes | redis      |
-
----
-
-### Worker ID
-
-* Muss eindeutig sein
-* Wird aktuell per Environment Variable gesetzt
-* Wird später durch Orchestrator (Kubernetes) injiziert
-
----
-
-### Häufige Fehler
-
-* `localhost` innerhalb von Containern verwenden
-* falsches Docker-Netzwerk
-* mehrere Redis-Instanzen
-* fehlendes Port-Mapping
+| Kontext    | Host      |
+| ---------- | --------- |
+| Lokal      | localhost |
+| Docker     | redis     |
+| Kubernetes | redis     |
 
 ---
 
 ## Aktuelle Einschränkungen
 
-1. Keine Medienverarbeitung (UDP / WebRTC fehlt)
-2. Redis Single-Instance (keine Verteilung / HA)
-3. Kein zentraler Reconciliation Loop
-4. Keine echte Service Discovery
-5. Minimaler Zustandsautomat (`warm`, `reserved`)
+1. Keine Medienverarbeitung
+2. Redis Single Instance
+3. Kein Autoscaling
+4. Keine Service Discovery
 
 ---
 
 ## Nächste Schritte
 
-* Kubernetes Deployment (k3d / k3s)
-* Worker-Autoscaling basierend auf verfügbarem Pool
-* Service Discovery
-* Ingest/Relay Layer
+* Autoscaling
+* Relay Layer
 * UDP Streaming
-* spätere WebRTC Integration
-
----
-
-## Hinweise
-
-Dieses Projekt wird iterativ entwickelt.
-
-Der Fokus liegt aktuell auf:
-
-* deterministischem Worker-Management
-* klaren Zustandsübergängen
-* stabiler Control Plane
+* WebRTC Integration
 
 ---
