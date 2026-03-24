@@ -1,0 +1,76 @@
+services:
+  redis:
+    image: redis:7
+    container_name: rtc-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  session-control:
+    build:
+      context: .
+      dockerfile: session_control/Dockerfile
+    image: rtc-session-control:dev
+    container_name: rtc-session-control
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker-1:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    image: rtc-worker:dev
+    container_name: rtc-worker-1
+    environment:
+      WORKER_ID: worker-1
+      WORKER_PORT: "9000"
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "9000:9000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker-2:
+    image: rtc-worker:dev
+    container_name: rtc-worker-2
+    environment:
+      WORKER_ID: worker-2
+      WORKER_PORT: "9000"
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "9001:9000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker-1:
+        condition: service_started
+    restart: unless-stopped
+
+  worker-3:
+    image: rtc-worker:dev
+    container_name: rtc-worker-3
+    environment:
+      WORKER_ID: worker-3
+      WORKER_PORT: "9000"
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "9002:9000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker-1:
+        condition: service_started
+    restart: unless-stopped
