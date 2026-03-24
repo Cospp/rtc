@@ -1,8 +1,7 @@
-import json
 
 from redis.asyncio import Redis
 
-from session_control.app.models.worker import WorkerRecord
+from shared.models.worker import WorkerRecord, WorkerStatus
 
 
 class WorkerRepository:
@@ -18,8 +17,7 @@ class WorkerRepository:
         if data is None:
             return None
 
-        payload = json.loads(data)
-        return WorkerRecord(**payload)
+        return WorkerRecord.model_validate_json(data)
 
     async def save_worker(self, worker: WorkerRecord, ttl_seconds: int) -> None:
         await self.redis.set(
@@ -28,7 +26,7 @@ class WorkerRepository:
             ex=ttl_seconds,
         )
 
-        if worker.status == "warm":
+        if worker.status == WorkerStatus.WARM:
             await self.redis.sadd("workers:warm", worker.worker_id)
         else:
             await self.redis.srem("workers:warm", worker.worker_id)

@@ -1,9 +1,8 @@
 import asyncio
-import json
 import logging
 
 from worker.app.core.config import settings
-from worker.app.models.worker import WorkerRecord, utc_now_iso
+from shared.models.worker import WorkerRecord, WorkerStatus, utc_now_iso
 from worker.app.redis.session_repository import SessionRepository
 from worker.app.redis.worker_repository import WorkerRepository
 
@@ -22,7 +21,7 @@ class WorkerService:
 
     def build_worker_record(
         self,
-        status: str = "warm",
+        status: WorkerStatus = WorkerStatus.WARM,
         assigned_session_id: str | None = None,
         endpoint: str | None = None,
     ) -> WorkerRecord:
@@ -35,7 +34,7 @@ class WorkerService:
         )
 
     async def register_worker(self) -> None:
-        worker = self.build_worker_record(status="warm")
+        worker = self.build_worker_record(status=WorkerStatus.WARM)
         await self.worker_repository.upsert_worker(worker)
 
         logger.info(
@@ -47,21 +46,17 @@ class WorkerService:
 
     async def heartbeat_loop(self) -> None:
         while True:
-            existing_raw = await self.worker_repository.get_worker(settings.worker_id)
+            existing = await self.worker_repository.get_worker(settings.worker_id)
 
-            if existing_raw is None:
-                worker = self.build_worker_record(status="warm")
+            if existing is None:
+                worker = self.build_worker_record(status=WorkerStatus.WARM)
             else:
-                existing = json.loads(existing_raw)
+                current_status = existing.status
+                assigned_session_id = existing.assigned_session_id
+                endpoint = existing.endpoint
 
-                current_status = existing.get("status", "warm")
-                assigned_session_id = existing.get("assigned_session_id")
-                endpoint = existing.get("endpoint")
-
-                # Release-Logik:
-                # Falls Worker reserviert ist, aber die Session nicht mehr existiert,
-                # wird der Worker wieder freigegeben.
-                if current_status == "reserved" and assigned_session_id:
+                # Release-Logik
+                if current_status == WorkerStatus.RESERVED and assigned_session_id:
                     session_exists = await self.session_repository.exists(assigned_session_id)
 
                     if not session_exists:
@@ -70,7 +65,7 @@ class WorkerService:
                             settings.worker_id,
                             assigned_session_id,
                         )
-                        current_status = "warm"
+                        current_status = WorkerStatus.WARM
                         assigned_session_id = None
 
                 worker = self.build_worker_record(
