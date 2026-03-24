@@ -4,11 +4,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "session-control"
-    app_host: str = "127.0.0.1"
+    app_host: str = "0.0.0.0"
     app_port: int = 8000
     app_debug: bool = True
 
-    redis_url: str = Field(default="redis://localhost:6379/0")
+    redis_url: str = Field(default="redis://redis:6379/0")
     redis_connect_timeout_seconds: float = 2.0
 
     session_ttl_seconds: int = 60
