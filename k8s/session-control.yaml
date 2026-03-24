@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: session-control
+  namespace: rtc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: session-control
+  template:
+    metadata:
+      labels:
+        app: session-control
+    spec:
+      containers:
+        - name: session-control
+          image: rtc-session-control:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REDIS_URL
+              value: redis://redis:6379/0
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: session-control
+  namespace: rtc
+spec:
+  selector:
+    app: session-control
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30080
+  type: NodePort
