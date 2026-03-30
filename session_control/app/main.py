@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from session_control.app.api.dashboard_routes import router as dashboard_router
+from session_control.app.api.debug_routes import router as debug_router
 from session_control.app.api.session_routes import router as session_router
 from session_control.app.core.config import settings
 from session_control.app.core.logging import setup_logging
@@ -39,6 +40,7 @@ app = FastAPI(
 )
 
 app.include_router(dashboard_router)
+app.include_router(debug_router)
 app.include_router(session_router)
 
 
