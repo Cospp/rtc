@@ -17,7 +17,10 @@ class WorkerRepository:
         if data is None:
             return None
 
-        return WorkerRecord.model_validate_json(data)
+        return self.get_worker_from_json(data)
+
+    def get_worker_from_json(self, payload: str) -> WorkerRecord:
+        return WorkerRecord.model_validate_json(payload)
 
     async def save_worker(self, worker: WorkerRecord, ttl_seconds: int) -> None:
         await self.redis.set(

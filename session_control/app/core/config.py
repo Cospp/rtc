@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     redis_connect_timeout_seconds: float = 2.0
 
     session_ttl_seconds: int = 60
+    dead_worker_ttl_seconds: int = 60
+    kubernetes_namespace: str = "rtc"
 
 
     model_config = SettingsConfigDict(

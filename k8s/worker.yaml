@@ -4,7 +4,7 @@ metadata:
   name: worker
   namespace: rtc
 spec:
-  replicas: 3
+  replicas: 60
   selector:
     matchLabels:
       app: worker
@@ -25,7 +25,7 @@ spec:
             - name: WORKER_PORT
               value: "9000"
 
-            # 🔥 WICHTIG: dynamische Worker-ID
+            # WICHTIG: dynamische Worker-ID
             - name: WORKER_ID
               valueFrom:
                 fieldRef:
