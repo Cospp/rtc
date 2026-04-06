@@ -3,7 +3,10 @@ from fastapi import APIRouter, HTTPException
 from session_control.app.models.session import SessionRequest, SessionResponse
 from session_control.app.redis.redis_client import get_redis
 from session_control.app.services.session_service import (
+    NoRelayAvailableError,
     NoWorkerAvailableError,
+    RelayAssignmentError,
+    RelayBindingError,
     SessionService,
     WorkerAssignmentError,
 )
@@ -18,8 +21,14 @@ async def create_session(request: SessionRequest) -> SessionResponse:
 
     try:
         return await service.create_session(request)
+    except NoRelayAvailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except NoWorkerAvailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RelayAssignmentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RelayBindingError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except WorkerAssignmentError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

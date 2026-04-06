@@ -19,3 +19,6 @@ class SessionRepository:
         if data is None:
             return None
         return json.loads(data)
+
+    async def delete_session(self, session_id: str) -> None:
+        await self.redis.delete(f"session:{session_id}")

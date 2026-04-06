@@ -10,9 +10,10 @@ class Settings(BaseSettings):
 
     redis_url: str = Field(default="redis://redis:6379/0")
     redis_connect_timeout_seconds: float = 2.0
+    relay_bind_timeout_seconds: float = 2.0
 
-    session_ttl_seconds: int = 60
-    dead_worker_ttl_seconds: int = 60
+    session_ttl_seconds: int = 15
+    dead_worker_ttl_seconds: int = 20
     kubernetes_namespace: str = "rtc"
 
 
