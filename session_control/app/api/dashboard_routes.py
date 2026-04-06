@@ -21,15 +21,43 @@ def _safe_json_loads(raw: str | None) -> dict:
     return json.loads(raw)
 
 
+async def _scan_keys(redis_client, pattern: str) -> list[str]:
+    keys = [key async for key in redis_client.scan_iter(match=pattern)]
+    keys.sort()
+    return keys
+
+
+async def _mget_map(redis_client, keys: list[str]) -> dict[str, str]:
+    if not keys:
+        return {}
+
+    values = await redis_client.mget(keys)
+    return {
+        key: value
+        for key, value in zip(keys, values, strict=False)
+        if value is not None
+    }
+
+
+async def _ttl_map(redis_client, keys: list[str]) -> dict[str, int]:
+    if not keys:
+        return {}
+
+    pipeline = redis_client.pipeline()
+    for key in keys:
+        pipeline.ttl(key)
+    ttl_values = await pipeline.execute()
+    return {
+        key: int(ttl)
+        for key, ttl in zip(keys, ttl_values, strict=False)
+    }
+
+
 async def _load_dashboard_state() -> dict:
     redis_client = await get_redis()
 
-    redis_info = await redis_client.info("stats")
-    redis_clients = await redis_client.info("clients")
-    redis_memory = await redis_client.info("memory")
-    redis_server = await redis_client.info("server")
-    redis_keyspace = await redis_client.info("keyspace")
-    db0_keyspace = redis_keyspace.get("db0", {})
+    redis_info = await redis_client.info()
+    db0_keyspace = redis_info.get("db0", {})
 
     if isinstance(db0_keyspace, str):
         db0_keyspace_summary = db0_keyspace
@@ -40,18 +68,23 @@ async def _load_dashboard_state() -> dict:
             "avg_ttl": db0_keyspace.get("avg_ttl", 0),
         }
 
-    relay_keys = sorted(await redis_client.keys("relay:*"))
-    relay_media_keys = sorted(await redis_client.keys("session-media-relay:*"))
-    worker_keys = sorted(await redis_client.keys("worker:*"))
-    worker_media_keys = sorted(await redis_client.keys("session-media-worker:*"))
-    session_keys = sorted(await redis_client.keys("session:*"))
+    relay_keys = await _scan_keys(redis_client, "relay:*")
+    relay_media_keys = await _scan_keys(redis_client, "session-media-relay:*")
+    worker_keys = await _scan_keys(redis_client, "worker:*")
+    worker_media_keys = await _scan_keys(redis_client, "session-media-worker:*")
+    session_keys = await _scan_keys(redis_client, "session:*")
+
+    relay_payloads = await _mget_map(redis_client, relay_keys)
+    relay_ttls = await _ttl_map(redis_client, list(relay_payloads))
+    worker_payloads = await _mget_map(redis_client, worker_keys)
+    worker_ttls = await _ttl_map(redis_client, list(worker_payloads))
+    relay_media_payloads = await _mget_map(redis_client, relay_media_keys)
+    worker_media_payloads = await _mget_map(redis_client, worker_media_keys)
+    session_payloads = await _mget_map(redis_client, session_keys)
+    session_ttls = await _ttl_map(redis_client, list(session_payloads))
 
     relay_records: list[dict] = []
-    for relay_key in relay_keys:
-        relay_raw = await redis_client.get(relay_key)
-        if relay_raw is None:
-            continue
-
+    for relay_key, relay_raw in relay_payloads.items():
         relay = RelayRecord.model_validate_json(relay_raw)
         relay_records.append(
             {
@@ -62,16 +95,12 @@ async def _load_dashboard_state() -> dict:
                 "last_heartbeat": relay.last_heartbeat,
                 "current_sessions": relay.current_sessions,
                 "max_sessions": relay.max_sessions,
-                "ttl_seconds": await redis_client.ttl(relay_key),
+                "ttl_seconds": relay_ttls.get(relay_key, -2),
             }
         )
 
     worker_records: list[dict] = []
-    for worker_key in worker_keys:
-        worker_raw = await redis_client.get(worker_key)
-        if worker_raw is None:
-            continue
-
+    for worker_key, worker_raw in worker_payloads.items():
         worker = WorkerRecord.model_validate_json(worker_raw)
         worker_records.append(
             {
@@ -80,34 +109,28 @@ async def _load_dashboard_state() -> dict:
                 "endpoint": worker.endpoint,
                 "last_heartbeat": worker.last_heartbeat,
                 "assigned_session_id": worker.assigned_session_id,
-                "ttl_seconds": await redis_client.ttl(worker_key),
+                "ttl_seconds": worker_ttls.get(worker_key, -2),
             }
         )
 
     relay_media_stats: dict[str, dict] = {}
-    for relay_media_key in relay_media_keys:
-        media_raw = await redis_client.get(relay_media_key)
+    for media_raw in relay_media_payloads.values():
         media = _safe_json_loads(media_raw)
         session_id = media.get("session_id")
         if session_id:
             relay_media_stats[session_id] = media
 
     worker_media_stats: dict[str, dict] = {}
-    for worker_media_key in worker_media_keys:
-        media_raw = await redis_client.get(worker_media_key)
+    for media_raw in worker_media_payloads.values():
         media = _safe_json_loads(media_raw)
         session_id = media.get("session_id")
         if session_id:
             worker_media_stats[session_id] = media
 
     session_records: list[dict] = []
-    for session_key in session_keys:
-        session_raw = await redis_client.get(session_key)
-        if session_raw is None:
-            continue
-
+    for session_key, session_raw in session_payloads.items():
         session = json.loads(session_raw)
-        session["ttl_seconds"] = await redis_client.ttl(session_key)
+        session["ttl_seconds"] = session_ttls.get(session_key, -2)
         relay_media = relay_media_stats.get(session["session_id"], {})
         worker_media = worker_media_stats.get(session["session_id"], {})
         session["relay_media"] = relay_media
@@ -220,11 +243,11 @@ async def _load_dashboard_state() -> dict:
         },
         "redis": {
             "status": "ok",
-            "version": redis_server.get("redis_version", "-"),
-            "uptime_seconds": redis_server.get("uptime_in_seconds", 0),
-            "connected_clients": redis_clients.get("connected_clients", 0),
-            "used_memory_human": redis_memory.get("used_memory_human", "-"),
-            "peak_memory_human": redis_memory.get("used_memory_peak_human", "-"),
+            "version": redis_info.get("redis_version", "-"),
+            "uptime_seconds": redis_info.get("uptime_in_seconds", 0),
+            "connected_clients": redis_info.get("connected_clients", 0),
+            "used_memory_human": redis_info.get("used_memory_human", "-"),
+            "peak_memory_human": redis_info.get("used_memory_peak_human", "-"),
             "db0": db0_keyspace_summary,
             "expired_keys": redis_info.get("expired_keys", 0),
             "evicted_keys": redis_info.get("evicted_keys", 0),
@@ -690,6 +713,7 @@ async def dashboard() -> str:
 
   <script>
     const openRelayIds = new Set();
+    let refreshInFlight = false;
 
     function escapeHtml(value) {
       return String(value)
@@ -934,10 +958,18 @@ async def dashboard() -> str:
     }
 
     async function refreshDashboard() {
+      if (refreshInFlight) {
+        return;
+      }
+
+      refreshInFlight = true;
       try {
         syncOpenRelayIds();
 
         const response = await fetch('/dashboard/state', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`dashboard state failed: ${response.status}`);
+        }
         const state = await response.json();
         const relayCapacityDetail = `${state.summary.relay_capacity_used} / ${state.summary.relay_capacity_total} sessions in use`;
         const workerRecordDetail = `${state.summary.worker_record_total} records tracked | worker recv ${formatBytes(state.summary.worker_media_total_bytes)}`;
@@ -966,6 +998,8 @@ async def dashboard() -> str:
         });
       } catch (error) {
         setIfChanged('updated-at', 'refresh failed');
+      } finally {
+        refreshInFlight = false;
       }
     }
 
