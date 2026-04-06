@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from worker.app.core.config import settings
 from worker.app.redis.redis_client import close_redis, init_redis, ping_redis
@@ -61,3 +61,16 @@ async def health() -> dict:
         "status": "ok",
         "redis": redis_ok,
     }
+
+
+@app.post("/internal/v1/media/bind/{session_id}")
+async def bind_media_session(session_id: str) -> dict:
+    service: WorkerService = app.state.worker_service
+    return await service.bind_media_session(session_id)
+
+
+@app.post("/internal/v1/media/ingest/{session_id}")
+async def ingest_media(session_id: str, request: Request) -> dict:
+    service: WorkerService = app.state.worker_service
+    payload = await request.body()
+    return await service.ingest_media(session_id, payload)
