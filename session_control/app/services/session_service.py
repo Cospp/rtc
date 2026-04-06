@@ -6,6 +6,7 @@ from redis.exceptions import ResponseError
 from session_control.app.core.config import settings
 from session_control.app.models.session import (
     SessionRequest,
+    SessionRecord,
     SessionResponse,
     build_session_record,
 )
@@ -44,6 +45,44 @@ class SessionService:
         self.assignment_repository = AssignmentRepository(redis_client)
         self.relay_repository = RelayRepository(redis_client)
         self.relay_client = RelayClient()
+
+    async def _cleanup_failed_session_setup(self, session: SessionRecord) -> None:
+        delete_error: Exception | None = None
+        release_error: Exception | None = None
+
+        try:
+            await self.session_repository.delete_session(session.session_id)
+        except Exception as exc:
+            delete_error = exc
+            logger.exception(
+                "Failed to delete session during rollback | session_id=%s relay_id=%s worker_id=%s",
+                session.session_id,
+                session.relay_id,
+                session.worker_id,
+            )
+
+        try:
+            await self.assignment_repository.release_resources(
+                relay_id=session.relay_id,
+                worker_id=session.worker_id,
+                session_id=session.session_id,
+            )
+        except Exception as exc:
+            release_error = exc
+            logger.exception(
+                "Failed to release assignment during rollback | session_id=%s relay_id=%s worker_id=%s",
+                session.session_id,
+                session.relay_id,
+                session.worker_id,
+            )
+
+        if delete_error or release_error:
+            details = []
+            if delete_error is not None:
+                details.append(f"delete_session failed: {delete_error}")
+            if release_error is not None:
+                details.append(f"release_resources failed: {release_error}")
+            raise RuntimeError("; ".join(details))
 
     async def create_session(self, request: SessionRequest) -> SessionResponse:
         session = build_session_record(request)
@@ -89,11 +128,20 @@ class SessionService:
 
         session.relay_public_endpoint = relay.public_endpoint
 
-        await self.session_repository.save_session(
-            session_id=session.session_id,
-            payload=session.model_dump_json(),
-            ttl_seconds=settings.session_ttl_seconds,
-        )
+        try:
+            await self.session_repository.save_session(
+                session_id=session.session_id,
+                payload=session.model_dump_json(),
+                ttl_seconds=settings.session_ttl_seconds,
+            )
+        except Exception as exc:
+            try:
+                await self._cleanup_failed_session_setup(session)
+            except Exception as cleanup_exc:
+                raise RuntimeError(
+                    f"failed to persist initial session state: {exc}; cleanup failed: {cleanup_exc}"
+                ) from exc
+            raise
 
         try:
             await self.relay_client.bind_session(
@@ -102,20 +150,29 @@ class SessionService:
                 worker_id=session.worker_id,
             )
         except RelayBindError as exc:
-            await self.session_repository.delete_session(session.session_id)
-            await self.assignment_repository.release_resources(
-                relay_id=session.relay_id,
-                worker_id=session.worker_id,
-                session_id=session.session_id,
-            )
+            try:
+                await self._cleanup_failed_session_setup(session)
+            except Exception as cleanup_exc:
+                raise RelayBindingError(
+                    f"{exc}; cleanup failed: {cleanup_exc}"
+                ) from exc
             raise RelayBindingError(str(exc)) from exc
 
         session.status = "connecting"
-        await self.session_repository.save_session(
-            session_id=session.session_id,
-            payload=session.model_dump_json(),
-            ttl_seconds=settings.session_ttl_seconds,
-        )
+        try:
+            await self.session_repository.save_session(
+                session_id=session.session_id,
+                payload=session.model_dump_json(),
+                ttl_seconds=settings.session_ttl_seconds,
+            )
+        except Exception as exc:
+            try:
+                await self._cleanup_failed_session_setup(session)
+            except Exception as cleanup_exc:
+                raise RuntimeError(
+                    f"failed to persist connected session state: {exc}; cleanup failed: {cleanup_exc}"
+                ) from exc
+            raise
 
         logger.info(
             "Session assigned and bound | session_id=%s client_id=%s relay_id=%s worker_id=%s",
