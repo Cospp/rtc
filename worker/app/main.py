@@ -7,7 +7,7 @@ from worker.app.core.config import settings
 from worker.app.redis.redis_client import close_redis, init_redis, ping_redis
 from worker.app.redis.session_repository import SessionRepository
 from worker.app.redis.worker_repository import WorkerRepository
-from worker.app.services.worker_service import WorkerService
+from worker.app.services.worker_service import MediaSessionAccessError, WorkerService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,11 +66,17 @@ async def health() -> dict:
 @app.post("/internal/v1/media/bind/{session_id}")
 async def bind_media_session(session_id: str) -> dict:
     service: WorkerService = app.state.worker_service
-    return await service.bind_media_session(session_id)
+    try:
+        return await service.bind_media_session(session_id)
+    except MediaSessionAccessError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/internal/v1/media/ingest/{session_id}")
 async def ingest_media(session_id: str, request: Request) -> dict:
     service: WorkerService = app.state.worker_service
     payload = await request.body()
-    return await service.ingest_media(session_id, payload)
+    try:
+        return await service.ingest_media(session_id, payload)
+    except MediaSessionAccessError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

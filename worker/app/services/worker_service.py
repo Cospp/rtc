@@ -11,6 +11,10 @@ from worker.app.redis.worker_repository import WorkerRepository
 logger = logging.getLogger(__name__)
 
 
+class MediaSessionAccessError(Exception):
+    pass
+
+
 class WorkerService:
     def __init__(
         self,
@@ -150,6 +154,10 @@ class WorkerService:
             self._heartbeat_task = None
 
     async def bind_media_session(self, session_id: str) -> dict:
+        await self._ensure_media_session_authorized(session_id)
+        return self._create_media_session_state(session_id)
+
+    def _create_media_session_state(self, session_id: str) -> dict:
         state = self._media_sessions.setdefault(
             session_id,
             {
@@ -167,8 +175,32 @@ class WorkerService:
         )
         return state
 
+    async def _ensure_media_session_authorized(self, session_id: str) -> None:
+        worker = await self.worker_repository.get_worker(settings.worker_id)
+        if worker is None:
+            raise MediaSessionAccessError("worker record unavailable")
+
+        if worker.assigned_session_id != session_id:
+            raise MediaSessionAccessError(f"worker not assigned to session {session_id}")
+
+        if worker.status not in {WorkerStatus.RESERVED, WorkerStatus.ACTIVE}:
+            raise MediaSessionAccessError(
+                f"worker not ready for session {session_id}: status={worker.status.value}"
+            )
+
+        if not await self.session_repository.exists(session_id):
+            raise MediaSessionAccessError(f"session not found: {session_id}")
+
+    async def _get_ingest_state(self, session_id: str) -> dict:
+        state = self._media_sessions.get(session_id)
+        if state is not None:
+            return state
+
+        await self._ensure_media_session_authorized(session_id)
+        return self._create_media_session_state(session_id)
+
     async def ingest_media(self, session_id: str, payload: bytes) -> dict:
-        state = await self.bind_media_session(session_id)
+        state = await self._get_ingest_state(session_id)
         state["packets"] += 1
         state["bytes"] += len(payload)
         state["last_ingested_at"] = utc_now_iso()
