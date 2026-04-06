@@ -84,44 +84,55 @@ class WorkerService:
 
     async def heartbeat_loop(self) -> None:
         while True:
-            existing = await self.worker_repository.get_worker(settings.worker_id)
+            try:
+                existing = await self.worker_repository.get_worker(settings.worker_id)
 
-            if existing is None:
-                worker = self.build_worker_record(status=WorkerStatus.WARM)
-            else:
-                current_status = existing.status
-                assigned_session_id = existing.assigned_session_id
-                endpoint = existing.endpoint
+                if existing is None:
+                    worker = self.build_worker_record(status=WorkerStatus.WARM)
+                else:
+                    current_status = existing.status
+                    assigned_session_id = existing.assigned_session_id
+                    endpoint = existing.endpoint
 
-                # Release-Logik
-                if current_status in {WorkerStatus.RESERVED, WorkerStatus.ACTIVE} and assigned_session_id:
-                    session_exists = await self.session_repository.exists(assigned_session_id)
+                    if current_status in {WorkerStatus.RESERVED, WorkerStatus.ACTIVE} and assigned_session_id:
+                        session_exists = await self.session_repository.exists(assigned_session_id)
 
-                    if not session_exists:
-                        await self._persist_media_stats(assigned_session_id, force=True)
-                        self._media_sessions.pop(assigned_session_id, None)
-                        logger.info(
-                            "Releasing worker because assigned session expired | worker_id=%s session_id=%s",
-                            settings.worker_id,
-                            assigned_session_id,
-                        )
-                        current_status = WorkerStatus.WARM
-                        assigned_session_id = None
+                        if not session_exists:
+                            try:
+                                await self._persist_media_stats(assigned_session_id, force=True)
+                            except Exception:
+                                logger.exception(
+                                    "Failed to persist final media stats before release | worker_id=%s session_id=%s",
+                                    settings.worker_id,
+                                    assigned_session_id,
+                                )
+                            self._media_sessions.pop(assigned_session_id, None)
+                            logger.info(
+                                "Releasing worker because assigned session expired | worker_id=%s session_id=%s",
+                                settings.worker_id,
+                                assigned_session_id,
+                            )
+                            current_status = WorkerStatus.WARM
+                            assigned_session_id = None
 
-                worker = self.build_worker_record(
-                    status=current_status,
-                    assigned_session_id=assigned_session_id,
-                    endpoint=endpoint,
+                    worker = self.build_worker_record(
+                        status=current_status,
+                        assigned_session_id=assigned_session_id,
+                        endpoint=endpoint,
+                    )
+
+                await self.worker_repository.upsert_worker(worker)
+
+                logger.info(
+                    "Worker heartbeat | worker_id=%s status=%s assigned_session_id=%s",
+                    worker.worker_id,
+                    worker.status,
+                    worker.assigned_session_id,
                 )
-
-            await self.worker_repository.upsert_worker(worker)
-
-            logger.info(
-                "Worker heartbeat | worker_id=%s status=%s assigned_session_id=%s",
-                worker.worker_id,
-                worker.status,
-                worker.assigned_session_id,
-            )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Worker heartbeat iteration failed | worker_id=%s", settings.worker_id)
 
             await asyncio.sleep(settings.worker_heartbeat_interval_seconds)
 
