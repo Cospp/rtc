@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -136,44 +137,70 @@ func (s *Service) BindSession(sessionID string, workerID string) (SessionBinding
 		return SessionBinding{}, fmt.Errorf("worker_id must not be empty")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	binding := SessionBinding{
+		SessionID: sessionID,
+		WorkerID:  workerID,
+		BoundAt:   time.Now().UTC(),
+	}
+	binding.LastSessionRefreshAt = binding.BoundAt.Format(time.RFC3339Nano)
 
+	s.mu.Lock()
 	if existing, exists := s.sessions[sessionID]; exists {
+		s.mu.Unlock()
 		return existing, nil
 	}
 
 	if len(s.sessions) >= s.cfg.MaxSessions {
 		s.status = StatusFull
+		s.mu.Unlock()
 		return SessionBinding{}, fmt.Errorf("relay capacity reached")
 	}
 
+	s.sessions[sessionID] = binding
+	s.status = s.computeStatusLocked()
+	s.mu.Unlock()
+
 	workerEndpoint, err := s.markWorkerActiveLocked(context.Background(), workerID, sessionID)
 	if err != nil {
+		s.rollbackPendingSession(sessionID)
 		return SessionBinding{}, err
 	}
-
-	binding := SessionBinding{
-		SessionID:      sessionID,
-		WorkerID:       workerID,
-		WorkerEndpoint: workerEndpoint,
-		BoundAt:        time.Now().UTC(),
-	}
+	binding.WorkerEndpoint = workerEndpoint
 
 	if err := s.bindWorkerMediaLocked(context.Background(), binding); err != nil {
+		s.rollbackPendingSession(sessionID)
+		if rollbackErr := s.releaseWorkerLocked(context.Background(), workerID, sessionID); rollbackErr != nil {
+			return SessionBinding{}, fmt.Errorf("%w; additionally failed to release worker: %v", err, rollbackErr)
+		}
 		return SessionBinding{}, err
 	}
 
-	s.sessions[sessionID] = binding
+	s.mu.Lock()
+	current, exists := s.sessions[sessionID]
+	if !exists {
+		s.mu.Unlock()
+		if rollbackErr := s.releaseWorkerLocked(context.Background(), workerID, sessionID); rollbackErr != nil {
+			return SessionBinding{}, fmt.Errorf("session binding disappeared for %s; additionally failed to release worker: %v", sessionID, rollbackErr)
+		}
+		return SessionBinding{}, fmt.Errorf("session binding disappeared for %s", sessionID)
+	}
+	current.WorkerEndpoint = workerEndpoint
+	current.LastSessionRefreshAt = binding.LastSessionRefreshAt
+	s.sessions[sessionID] = current
 	s.status = s.computeStatusLocked()
 
 	if err := s.persistLocked(context.Background()); err != nil {
 		delete(s.sessions, sessionID)
 		s.status = s.computeStatusLocked()
+		s.mu.Unlock()
+		if rollbackErr := s.releaseWorkerLocked(context.Background(), workerID, sessionID); rollbackErr != nil {
+			return SessionBinding{}, fmt.Errorf("%w; additionally failed to release worker: %v", err, rollbackErr)
+		}
 		return SessionBinding{}, err
 	}
+	s.mu.Unlock()
 
-	return binding, nil
+	return current, nil
 }
 
 func (s *Service) Snapshot() Snapshot {
@@ -201,31 +228,28 @@ func (s *Service) IngestPayload(sessionID string, payload []byte) (SessionBindin
 		return SessionBinding{}, fmt.Errorf("session_id must not be empty")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	s.mu.RLock()
 	binding, exists := s.sessions[sessionID]
+	s.mu.RUnlock()
 	if !exists {
 		return SessionBinding{}, fmt.Errorf("unknown session: %s", sessionID)
+	}
+	if binding.WorkerEndpoint == "" {
+		return SessionBinding{}, fmt.Errorf("session not ready: %s", sessionID)
+	}
+
+	if err := s.refreshSessionTTL(context.Background(), &binding); err != nil {
+		return SessionBinding{}, err
 	}
 
 	if err := s.forwardPayloadToWorkerLocked(binding, payload); err != nil {
 		return SessionBinding{}, err
 	}
 
-	if err := s.refreshSessionTTLLocked(context.Background(), &binding); err != nil {
-		return SessionBinding{}, err
+	binding, statsErr := s.recordIngestResult(binding, len(payload), binding.LastSessionRefreshAt)
+	if statsErr != nil {
+		log.Printf("relay media stats persist failed | relay_id=%s session_id=%s err=%v", s.cfg.RelayID, sessionID, statsErr)
 	}
-
-	binding.IngestedPackets++
-	binding.IngestedBytes += len(payload)
-	binding.LastIngestedAt = time.Now().UTC().Format(time.RFC3339Nano)
-
-	if err := s.persistMediaStatsLocked(context.Background(), &binding, false); err != nil {
-		return SessionBinding{}, err
-	}
-
-	s.sessions[sessionID] = binding
 
 	return binding, nil
 }
@@ -236,9 +260,13 @@ func (s *Service) heartbeatLoop() {
 
 	for range ticker.C {
 		s.mu.Lock()
-		_ = s.cleanupExpiredSessionsLocked(context.Background())
+		if err := s.cleanupExpiredSessionsLocked(context.Background()); err != nil {
+			log.Printf("relay cleanup failed | relay_id=%s err=%v", s.cfg.RelayID, err)
+		}
 		s.status = s.computeStatusLocked()
-		_ = s.persistLocked(context.Background())
+		if err := s.persistLocked(context.Background()); err != nil {
+			log.Printf("relay persist failed | relay_id=%s err=%v", s.cfg.RelayID, err)
+		}
 		s.mu.Unlock()
 	}
 }
@@ -251,7 +279,9 @@ func (s *Service) cleanupExpiredSessionsLocked(ctx context.Context) error {
 		}
 
 		if exists == 0 {
-			_ = s.persistMediaStatsLocked(ctx, &binding, true)
+			if err := s.persistMediaStatsLocked(ctx, &binding, true); err != nil {
+				log.Printf("relay final media stats persist failed | relay_id=%s session_id=%s err=%v", s.cfg.RelayID, sessionID, err)
+			}
 			if err := s.releaseWorkerLocked(ctx, binding.WorkerID, sessionID); err != nil {
 				return err
 			}
@@ -339,6 +369,14 @@ func (s *Service) computeStatusLocked() Status {
 	return StatusWarm
 }
 
+func (s *Service) rollbackPendingSession(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.sessions, sessionID)
+	s.status = s.computeStatusLocked()
+}
+
 func (s *Service) persistLocked(ctx context.Context) error {
 	record := redisRelayRecord{
 		RelayID:          s.cfg.RelayID,
@@ -424,7 +462,7 @@ func (s *Service) forwardPayloadToWorkerLocked(binding SessionBinding, payload [
 	return nil
 }
 
-func (s *Service) refreshSessionTTLLocked(ctx context.Context, binding *SessionBinding) error {
+func (s *Service) refreshSessionTTL(ctx context.Context, binding *SessionBinding) error {
 	now := time.Now().UTC()
 	if binding.LastSessionRefreshAt != "" {
 		lastRefresh, err := time.Parse(time.RFC3339Nano, binding.LastSessionRefreshAt)
@@ -433,12 +471,57 @@ func (s *Service) refreshSessionTTLLocked(ctx context.Context, binding *SessionB
 		}
 	}
 
-	if err := s.redis.Expire(ctx, "session:"+binding.SessionID, time.Duration(s.cfg.SessionTTLSeconds)*time.Second).Err(); err != nil {
+	refreshed, err := s.redis.Expire(
+		ctx,
+		"session:"+binding.SessionID,
+		time.Duration(s.cfg.SessionTTLSeconds)*time.Second,
+	).Result()
+	if err != nil {
 		return fmt.Errorf("refresh session ttl for %s: %w", binding.SessionID, err)
+	}
+	if !refreshed {
+		return fmt.Errorf("unknown session: %s", binding.SessionID)
 	}
 
 	binding.LastSessionRefreshAt = now.Format(time.RFC3339Nano)
 	return nil
+}
+
+func (s *Service) recordIngestResult(
+	fallback SessionBinding,
+	payloadSize int,
+	lastSessionRefreshAt string,
+) (SessionBinding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	binding, exists := s.sessions[fallback.SessionID]
+	if !exists {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		return SessionBinding{
+			SessionID:            fallback.SessionID,
+			WorkerID:             fallback.WorkerID,
+			WorkerEndpoint:       fallback.WorkerEndpoint,
+			BoundAt:              fallback.BoundAt,
+			IngestedPackets:      fallback.IngestedPackets + 1,
+			IngestedBytes:        fallback.IngestedBytes + payloadSize,
+			LastIngestedAt:       now,
+			LastSessionRefreshAt: lastSessionRefreshAt,
+			LastStatsPersistAt:   fallback.LastStatsPersistAt,
+		}, nil
+	}
+
+	binding.IngestedPackets++
+	binding.IngestedBytes += payloadSize
+	binding.LastIngestedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if lastSessionRefreshAt != "" {
+		binding.LastSessionRefreshAt = lastSessionRefreshAt
+	}
+
+	statsErr := s.persistMediaStatsLocked(context.Background(), &binding, false)
+	s.sessions[fallback.SessionID] = binding
+
+	return binding, statsErr
 }
 
 func (s *Service) persistMediaStatsLocked(ctx context.Context, binding *SessionBinding, force bool) error {

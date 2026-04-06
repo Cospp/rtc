@@ -122,6 +122,8 @@ func (h *Handler) handleIngestPayload(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(err.Error(), "unknown session:"):
 			status = http.StatusNotFound
+		case strings.HasPrefix(err.Error(), "session not ready:"):
+			status = http.StatusConflict
 		case strings.HasPrefix(err.Error(), "worker ingest failed:"):
 			status = http.StatusBadGateway
 		case strings.HasPrefix(err.Error(), "forward payload to worker:"):
