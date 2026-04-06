@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"relay/internal/relay"
 )
@@ -117,7 +118,16 @@ func (h *Handler) handleIngestPayload(w http.ResponseWriter, r *http.Request) {
 
 	binding, err := h.service.IngestPayload(sessionID, payload)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error()})
+		status := http.StatusInternalServerError
+		switch {
+		case strings.HasPrefix(err.Error(), "unknown session:"):
+			status = http.StatusNotFound
+		case strings.HasPrefix(err.Error(), "worker ingest failed:"):
+			status = http.StatusBadGateway
+		case strings.HasPrefix(err.Error(), "forward payload to worker:"):
+			status = http.StatusBadGateway
+		}
+		writeJSON(w, status, errorResponse{Error: err.Error()})
 		return
 	}
 
