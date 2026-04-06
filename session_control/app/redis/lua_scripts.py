@@ -61,27 +61,31 @@ end
 
 redis.call("SET", "relay:" .. selected_relay_id, cjson.encode(selected_relay), "KEEPTTL")
 
-local worker_id = redis.call("SPOP", warm_workers_key)
-if not worker_id then
-    rollback_relay(selected_relay_id)
-    return {err = "NO_WARM_WORKER"}
+local worker_id = nil
+local worker = nil
+
+while true do
+    local candidate_worker_id = redis.call("SPOP", warm_workers_key)
+    if not candidate_worker_id then
+        rollback_relay(selected_relay_id)
+        return {err = "NO_WARM_WORKER"}
+    end
+
+    local candidate_worker_key = "worker:" .. candidate_worker_id
+    local candidate_worker_raw = redis.call("GET", candidate_worker_key)
+
+    if candidate_worker_raw then
+        local candidate_worker = cjson.decode(candidate_worker_raw)
+
+        if candidate_worker["status"] == "warm" then
+            worker_id = candidate_worker_id
+            worker = candidate_worker
+            break
+        end
+    end
 end
 
 local worker_key = "worker:" .. worker_id
-local worker_raw = redis.call("GET", worker_key)
-
-if not worker_raw then
-    rollback_relay(selected_relay_id)
-    return {err = "WORKER_NOT_FOUND:" .. worker_id}
-end
-
-local worker = cjson.decode(worker_raw)
-
-if worker["status"] ~= "warm" then
-    rollback_relay(selected_relay_id)
-    return {err = "WORKER_NOT_WARM:" .. worker_id}
-end
-
 worker["status"] = "reserved"
 worker["assigned_session_id"] = session_id
 
