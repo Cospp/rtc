@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
+from shared.models.relay import RelayRecord
 from shared.models.worker import WorkerRecord
 from session_control.app.redis.redis_client import get_redis
 
@@ -14,11 +15,56 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _safe_json_loads(raw: str | None) -> dict:
+    if raw is None:
+        return {}
+    return json.loads(raw)
+
+
 async def _load_dashboard_state() -> dict:
     redis_client = await get_redis()
 
+    redis_info = await redis_client.info("stats")
+    redis_clients = await redis_client.info("clients")
+    redis_memory = await redis_client.info("memory")
+    redis_server = await redis_client.info("server")
+    redis_keyspace = await redis_client.info("keyspace")
+    db0_keyspace = redis_keyspace.get("db0", {})
+
+    if isinstance(db0_keyspace, str):
+        db0_keyspace_summary = db0_keyspace
+    else:
+        db0_keyspace_summary = {
+            "keys": db0_keyspace.get("keys", 0),
+            "expires": db0_keyspace.get("expires", 0),
+            "avg_ttl": db0_keyspace.get("avg_ttl", 0),
+        }
+
+    relay_keys = sorted(await redis_client.keys("relay:*"))
+    relay_media_keys = sorted(await redis_client.keys("session-media-relay:*"))
     worker_keys = sorted(await redis_client.keys("worker:*"))
+    worker_media_keys = sorted(await redis_client.keys("session-media-worker:*"))
     session_keys = sorted(await redis_client.keys("session:*"))
+
+    relay_records: list[dict] = []
+    for relay_key in relay_keys:
+        relay_raw = await redis_client.get(relay_key)
+        if relay_raw is None:
+            continue
+
+        relay = RelayRecord.model_validate_json(relay_raw)
+        relay_records.append(
+            {
+                "relay_id": relay.relay_id,
+                "status": relay.status.value,
+                "public_endpoint": relay.public_endpoint,
+                "internal_endpoint": relay.internal_endpoint,
+                "last_heartbeat": relay.last_heartbeat,
+                "current_sessions": relay.current_sessions,
+                "max_sessions": relay.max_sessions,
+                "ttl_seconds": await redis_client.ttl(relay_key),
+            }
+        )
 
     worker_records: list[dict] = []
     for worker_key in worker_keys:
@@ -38,6 +84,22 @@ async def _load_dashboard_state() -> dict:
             }
         )
 
+    relay_media_stats: dict[str, dict] = {}
+    for relay_media_key in relay_media_keys:
+        media_raw = await redis_client.get(relay_media_key)
+        media = _safe_json_loads(media_raw)
+        session_id = media.get("session_id")
+        if session_id:
+            relay_media_stats[session_id] = media
+
+    worker_media_stats: dict[str, dict] = {}
+    for worker_media_key in worker_media_keys:
+        media_raw = await redis_client.get(worker_media_key)
+        media = _safe_json_loads(media_raw)
+        session_id = media.get("session_id")
+        if session_id:
+            worker_media_stats[session_id] = media
+
     session_records: list[dict] = []
     for session_key in session_keys:
         session_raw = await redis_client.get(session_key)
@@ -46,32 +108,138 @@ async def _load_dashboard_state() -> dict:
 
         session = json.loads(session_raw)
         session["ttl_seconds"] = await redis_client.ttl(session_key)
+        relay_media = relay_media_stats.get(session["session_id"], {})
+        worker_media = worker_media_stats.get(session["session_id"], {})
+        session["relay_media"] = relay_media
+        session["worker_media"] = worker_media
+        session["relay_bytes"] = int(relay_media.get("total_bytes", 0) or 0)
+        session["relay_packets"] = int(relay_media.get("total_packets", 0) or 0)
+        session["worker_bytes"] = int(worker_media.get("total_bytes", 0) or 0)
+        session["worker_packets"] = int(worker_media.get("total_packets", 0) or 0)
         session_records.append(session)
 
+    sessions_by_relay: dict[str, list[dict]] = {}
+    sessions_by_worker: dict[str, dict] = {}
+    for session in session_records:
+        relay_id = session.get("relay_id")
+        worker_id = session.get("worker_id")
+
+        if relay_id:
+            sessions_by_relay.setdefault(relay_id, []).append(session)
+
+        if worker_id:
+            sessions_by_worker[worker_id] = session
+
+    for relay in relay_records:
+        relay_sessions = sorted(
+            sessions_by_relay.get(relay["relay_id"], []),
+            key=lambda item: item["session_id"],
+        )
+        relay["sessions"] = [
+            {
+                "session_id": session["session_id"],
+                "worker_id": session.get("worker_id") or "-",
+                "client_id": session.get("client_id") or "-",
+                "status": session.get("status") or "-",
+                "relay_bytes": session.get("relay_bytes", 0),
+                "worker_bytes": session.get("worker_bytes", 0),
+            }
+            for session in relay_sessions
+        ]
+
+    for worker in worker_records:
+        session = sessions_by_worker.get(worker["worker_id"])
+        worker["relay_id"] = session.get("relay_id") if session else None
+        worker["media_bytes"] = session.get("worker_bytes", 0) if session else 0
+        worker["media_packets"] = session.get("worker_packets", 0) if session else 0
+        worker["relay_received_bytes"] = session.get("relay_bytes", 0) if session else 0
+        worker["relay_received_packets"] = (
+            session.get("relay_packets", 0) if session else 0
+        )
+
+    relay_records.sort(key=lambda relay: relay["relay_id"])
     worker_records.sort(key=lambda worker: worker["worker_id"])
     session_records.sort(key=lambda session: session["session_id"])
+
+    warm_relays = [relay for relay in relay_records if relay["status"] == "warm"]
+    full_relays = [relay for relay in relay_records if relay["status"] == "full"]
+    other_relays = [
+        relay for relay in relay_records if relay["status"] not in {"warm", "full"}
+    ]
 
     warm_workers = [worker for worker in worker_records if worker["status"] == "warm"]
     reserved_workers = [
         worker for worker in worker_records if worker["status"] == "reserved"
+    ]
+    busy_workers = [
+        worker for worker in worker_records if worker["status"] in {"reserved", "active"}
+    ]
+    dead_workers = [worker for worker in worker_records if worker["status"] == "dead"]
+    drift_workers = [
+        worker
+        for worker in worker_records
+        if worker["status"] not in {"warm", "reserved", "active", "dead"}
     ]
     other_workers = [
         worker
         for worker in worker_records
         if worker["status"] not in {"warm", "reserved"}
     ]
+    live_workers = [worker for worker in worker_records if worker["status"] != "dead"]
+
+    relay_capacity_total = sum(relay["max_sessions"] for relay in relay_records)
+    relay_capacity_used = sum(relay["current_sessions"] for relay in relay_records)
+    relay_media_total_bytes = sum(
+        int(session.get("relay_bytes", 0) or 0) for session in session_records
+    )
+    worker_media_total_bytes = sum(
+        int(session.get("worker_bytes", 0) or 0) for session in session_records
+    )
 
     return {
         "updated_at": _utc_now_iso(),
         "summary": {
+            "relay_total": len(relay_records),
+            "relay_warm_total": len(warm_relays),
+            "relay_full_total": len(full_relays),
+            "relay_other_total": len(other_relays),
+            "relay_capacity_total": relay_capacity_total,
+            "relay_capacity_used": relay_capacity_used,
+            "worker_record_total": len(worker_records),
+            "worker_live_total": len(live_workers),
             "worker_total": len(worker_records),
             "warm_total": len(warm_workers),
             "reserved_total": len(reserved_workers),
+            "busy_total": len(busy_workers),
+            "dead_total": len(dead_workers),
+            "drift_total": len(drift_workers),
             "other_total": len(other_workers),
             "session_total": len(session_records),
+            "relay_media_total_bytes": relay_media_total_bytes,
+            "worker_media_total_bytes": worker_media_total_bytes,
         },
+        "redis": {
+            "status": "ok",
+            "version": redis_server.get("redis_version", "-"),
+            "uptime_seconds": redis_server.get("uptime_in_seconds", 0),
+            "connected_clients": redis_clients.get("connected_clients", 0),
+            "used_memory_human": redis_memory.get("used_memory_human", "-"),
+            "peak_memory_human": redis_memory.get("used_memory_peak_human", "-"),
+            "db0": db0_keyspace_summary,
+            "expired_keys": redis_info.get("expired_keys", 0),
+            "evicted_keys": redis_info.get("evicted_keys", 0),
+            "keyspace_hits": redis_info.get("keyspace_hits", 0),
+            "keyspace_misses": redis_info.get("keyspace_misses", 0),
+        },
+        "relays": relay_records,
+        "warm_relays": warm_relays,
+        "full_relays": full_relays,
+        "other_relays": other_relays,
         "warm_workers": warm_workers,
         "reserved_workers": reserved_workers,
+        "busy_workers": busy_workers,
+        "dead_workers": dead_workers,
+        "drift_workers": drift_workers,
         "other_workers": other_workers,
         "sessions": session_records,
     }
