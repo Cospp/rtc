@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: relay
+  namespace: rtc
+spec:
+  selector:
+    matchLabels:
+      app: relay
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: relay
+        role: media-node
+    spec:
+      nodeSelector:
+        rtc-role: media
+      containers:
+        - name: relay
+          image: rtc-relay:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REDIS_URL
+              value: redis://redis:6379/0
+            - name: PORT
+              value: "8080"
+            - name: RELAY_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: RELAY_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: RELAY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: RELAY_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: RELAY_PUBLIC_PORT
+              value: "31080"
+            - name: RELAY_PUBLIC_HOST_DEV
+              value: ""
+            - name: RELAY_PUBLIC_PORT_BASE
+              value: "31080"
+            - name: RELAY_MAX_SESSIONS
+              value: "10"
+            - name: RELAY_TTL_SECONDS
+              value: "15"
+            - name: RELAY_HEARTBEAT_INTERVAL_SECONDS
+              value: "5"
+          command:
+            - /bin/sh
+            - -c
+            - >-
+              export RELAY_INTERNAL_ENDPOINT="${RELAY_POD_IP}:8080" &&
+              if [ -n "${RELAY_PUBLIC_HOST_DEV}" ]; then
+                RELAY_NODE_INDEX="${RELAY_NODE_NAME##*-agent-}" &&
+                if [ "${RELAY_NODE_INDEX}" = "${RELAY_NODE_NAME}" ]; then
+                  echo "failed to derive agent index from node name ${RELAY_NODE_NAME}" >&2 &&
+                  exit 1;
+                fi &&
+                RELAY_DEV_PORT=$((RELAY_PUBLIC_PORT_BASE + RELAY_NODE_INDEX)) &&
+                export RELAY_PUBLIC_ENDPOINT="${RELAY_PUBLIC_HOST_DEV}:${RELAY_DEV_PORT}";
+              else
+                export RELAY_PUBLIC_ENDPOINT="${RELAY_NODE_IP}:${RELAY_PUBLIC_PORT}";
+              fi &&
+              relay
+          ports:
+            - name: relay-http
+              containerPort: 8080
+              hostPort: 31080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
