@@ -80,6 +80,11 @@ class SessionService:
 
         relay = await self.relay_repository.get_relay(relay_id)
         if relay is None:
+            await self.assignment_repository.release_resources(
+                relay_id=session.relay_id,
+                worker_id=session.worker_id,
+                session_id=session.session_id,
+            )
             raise RelayAssignmentError(f"Assigned relay {relay_id} not found")
 
         session.relay_public_endpoint = relay.public_endpoint
@@ -105,7 +110,7 @@ class SessionService:
             )
             raise RelayBindingError(str(exc)) from exc
 
-        session.status = "streaming"
+        session.status = "connecting"
         await self.session_repository.save_session(
             session_id=session.session_id,
             payload=session.model_dump_json(),
