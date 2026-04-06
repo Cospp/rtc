@@ -256,16 +256,20 @@ async def dashboard() -> str:
   <title>RTC Dashboard</title>
   <style>
     :root {
-      --bg: #f3efe5;
-      --panel: #fffaf1;
-      --line: #d7cdb8;
-      --text: #1d2a2d;
-      --muted: #6f7b7d;
-      --warm: #c7e7cf;
-      --reserved: #f4d2a3;
-      --other: #d7dce8;
-      --sessions: #d8e9f1;
-      --accent: #17494d;
+      --bg: #07111f;
+      --bg-accent: #0f2238;
+      --panel: rgba(10, 24, 42, 0.88);
+      --line: rgba(126, 167, 214, 0.16);
+      --text: #eaf3ff;
+      --muted: #8ba6c7;
+      --accent: #6cd3ff;
+      --teal: #2bd2b3;
+      --yellow: #f5d66d;
+      --orange: #ff9f5a;
+      --red: #ff6b7a;
+      --blue: #7ab8ff;
+      --violet: #9b8cff;
+      --shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
     }
 
     * {
@@ -276,32 +280,35 @@ async def dashboard() -> str:
       margin: 0;
       font-family: "Segoe UI", Tahoma, sans-serif;
       background:
-        radial-gradient(circle at top left, #fff7e8 0, transparent 28%),
-        linear-gradient(135deg, #ece5d7 0%, #f7f3ea 45%, #ebe4d3 100%);
+        radial-gradient(circle at top right, rgba(108, 211, 255, 0.16), transparent 24%),
+        radial-gradient(circle at bottom left, rgba(43, 210, 179, 0.12), transparent 28%),
+        linear-gradient(160deg, #040b16 0%, #07111f 36%, #0a1930 100%);
       color: var(--text);
       overflow: hidden;
     }
 
     .page {
       height: 100vh;
-      padding: 12px;
+      padding: 14px;
       display: grid;
-      grid-template-rows: 82px 1fr;
+      grid-template-rows: auto 1fr;
       gap: 12px;
     }
 
     .hero {
       display: grid;
-      grid-template-columns: 1.3fr repeat(5, 1fr);
-      gap: 10px;
+      grid-template-columns: minmax(220px, 1.05fr) repeat(8, minmax(84px, 0.92fr));
+      grid-auto-rows: minmax(74px, auto);
+      gap: 8px;
     }
 
     .panel {
-      background: rgba(255, 250, 241, 0.9);
+      background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 18px;
       padding: 10px 12px;
-      box-shadow: 0 12px 30px rgba(34, 34, 34, 0.08);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
       min-height: 0;
     }
 
@@ -309,100 +316,132 @@ async def dashboard() -> str:
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      background:
-        linear-gradient(135deg, rgba(23, 73, 77, 0.95), rgba(39, 95, 89, 0.92));
-      color: #f7f3ea;
+      background: linear-gradient(145deg, rgba(14, 34, 58, 0.98), rgba(8, 20, 36, 0.96));
+      border-color: rgba(108, 211, 255, 0.18);
     }
 
     .eyebrow {
-      font-size: 12px;
+      font-size: 11px;
       letter-spacing: 0.14em;
       text-transform: uppercase;
-      opacity: 0.7;
+      color: var(--accent);
+      opacity: 0.9;
     }
 
     .title {
-      margin: 6px 0 0;
-      font-size: 24px;
+      margin: 2px 0 0;
+      font-size: 20px;
       font-weight: 700;
     }
 
     .subtitle {
-      margin: 6px 0 0;
-      font-size: 12px;
-      color: rgba(247, 243, 234, 0.82);
+      margin: 4px 0 0;
+      font-size: 11px;
+      color: var(--muted);
     }
 
     .stat-label {
-      font-size: 11px;
+      font-size: 10px;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.11em;
       color: var(--muted);
+      line-height: 1.25;
     }
 
     .stat-value {
       margin-top: 6px;
-      font-size: 26px;
+      font-size: clamp(18px, 1.35vw, 24px);
       font-weight: 700;
+      line-height: 1;
+      word-break: break-word;
+    }
+
+    .stat-detail {
+      margin-top: 6px;
+      font-size: 9px;
+      color: var(--muted);
     }
 
     .layout {
       min-height: 0;
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr 1.15fr;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-rows: repeat(2, minmax(0, 1fr));
+      grid-auto-rows: minmax(0, 1fr);
       gap: 12px;
     }
 
     .column-title {
       margin: 0 0 6px;
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 700;
     }
 
     .column-subtitle {
-      margin: 0 0 8px;
+      margin: 0 0 10px;
       font-size: 11px;
       color: var(--muted);
     }
 
     .list {
-      height: calc(100% - 36px);
+      height: calc(100% - 44px);
       overflow: auto;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
       padding-right: 4px;
     }
 
     .list::-webkit-scrollbar {
-      width: 8px;
+      width: 7px;
     }
 
     .list::-webkit-scrollbar-thumb {
-      background: rgba(29, 42, 45, 0.18);
+      background: rgba(122, 184, 255, 0.24);
       border-radius: 999px;
     }
 
     .card {
       border-radius: 14px;
-      padding: 8px 10px;
-      border: 1px solid rgba(29, 42, 45, 0.08);
+      padding: 10px 11px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      background: rgba(255, 255, 255, 0.03);
     }
 
     .warm-card {
-      background: var(--warm);
+      background: linear-gradient(135deg, rgba(43, 210, 179, 0.18), rgba(43, 210, 179, 0.08));
     }
 
-    .reserved-card {
-      background: var(--reserved);
+    .busy-card {
+      background: linear-gradient(135deg, rgba(122, 184, 255, 0.18), rgba(122, 184, 255, 0.08));
     }
 
-    .other-card {
-      background: var(--other);
+    .danger-card {
+      background: linear-gradient(135deg, rgba(255, 107, 122, 0.18), rgba(255, 107, 122, 0.08));
     }
 
     .session-card {
-      background: var(--sessions);
+      background: linear-gradient(135deg, rgba(155, 140, 255, 0.18), rgba(155, 140, 255, 0.08));
+    }
+
+    .redis-card {
+      background: linear-gradient(135deg, rgba(108, 211, 255, 0.16), rgba(43, 210, 179, 0.08));
+    }
+
+    .relay-healthy {
+      background: linear-gradient(135deg, rgba(43, 210, 179, 0.18), rgba(43, 210, 179, 0.08));
+    }
+
+    .relay-warning {
+      background: linear-gradient(135deg, rgba(245, 214, 109, 0.2), rgba(245, 214, 109, 0.08));
+    }
+
+    .relay-hot {
+      background: linear-gradient(135deg, rgba(255, 159, 90, 0.22), rgba(255, 159, 90, 0.09));
+    }
+
+    .relay-full {
+      background: linear-gradient(135deg, rgba(255, 107, 122, 0.22), rgba(255, 107, 122, 0.09));
     }
 
     .card-head {
@@ -418,20 +457,100 @@ async def dashboard() -> str:
     }
 
     .badge {
-      padding: 1px 7px;
+      padding: 2px 8px;
       border-radius: 999px;
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      background: rgba(255, 255, 255, 0.52);
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
     }
 
     .card-meta {
       margin-top: 6px;
       display: grid;
-      gap: 2px;
+      gap: 3px;
       font-size: 11px;
-      color: #304244;
+      color: #c5d8ef;
+    }
+
+    .relay-card details {
+      margin-top: 8px;
+    }
+
+    .relay-card summary {
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      list-style: none;
+    }
+
+    .relay-card summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .relay-card summary::before {
+      content: '+ ';
+    }
+
+    .relay-card details[open] summary::before {
+      content: '- ';
+    }
+
+    .relay-session-list {
+      margin-top: 8px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .relay-session {
+      border-radius: 10px;
+      padding: 7px 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 11px;
+      color: #d8e8fb;
+    }
+
+    .metric-grid {
+      display: grid;
+      gap: 8px;
+    }
+
+    .metric-bar {
+      display: grid;
+      gap: 6px;
+    }
+
+    .metric-bar-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .metric-bar-track {
+      height: 9px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .metric-bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent), var(--teal));
+    }
+
+    .metric-bar-fill.warn {
+      background: linear-gradient(90deg, var(--yellow), var(--orange));
+    }
+
+    .metric-bar-fill.danger {
+      background: linear-gradient(90deg, var(--orange), var(--red));
     }
 
     .empty {
@@ -443,14 +562,14 @@ async def dashboard() -> str:
       color: var(--muted);
       border: 1px dashed var(--line);
       border-radius: 14px;
-      background: rgba(255, 255, 255, 0.35);
+      background: rgba(255, 255, 255, 0.03);
       padding: 10px;
     }
 
     @media (max-width: 1280px) {
       .hero {
-        grid-template-columns: repeat(3, 1fr);
-        grid-auto-rows: 1fr;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-auto-rows: minmax(76px, auto);
       }
 
       .hero-main {
@@ -459,7 +578,27 @@ async def dashboard() -> str:
 
       .layout {
         grid-template-columns: 1fr 1fr;
-        grid-template-rows: 1fr 1fr;
+        grid-template-rows: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 860px) {
+      .page {
+        grid-template-rows: auto 1fr;
+      }
+
+      .hero {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: none;
+        grid-auto-rows: minmax(220px, auto);
+      }
+
+      .stat-value {
+        font-size: 22px;
       }
     }
   </style>
@@ -470,26 +609,39 @@ async def dashboard() -> str:
       <article class="panel hero-main">
         <div>
           <div class="eyebrow">RTC Control Plane</div>
-          <h1 class="title">Worker State Dashboard</h1>
-          <p class="subtitle">Live view for warm and reserved workers, plus active session ownership.</p>
+          <h1 class="title">Relay Fleet Console</h1>
         </div>
         <div class="subtitle">Last update: <span id="updated-at">-</span></div>
       </article>
       <article class="panel">
-        <div class="stat-label">Workers</div>
-        <div id="worker-total" class="stat-value">0</div>
+        <div class="stat-label">Relay Capacity</div>
+        <div id="relay-total" class="stat-value">0</div>
+        <div id="relay-capacity-detail" class="stat-detail">0 / 0 sessions in use</div>
       </article>
       <article class="panel">
-        <div class="stat-label">Warm</div>
+        <div class="stat-label">Relay Warm</div>
+        <div id="relay-warm-total" class="stat-value">0</div>
+      </article>
+      <article class="panel">
+        <div class="stat-label">Relay Full</div>
+        <div id="relay-full-total" class="stat-value">0</div>
+      </article>
+      <article class="panel">
+        <div class="stat-label">Workers Live</div>
+        <div id="worker-total" class="stat-value">0</div>
+        <div id="worker-record-detail" class="stat-detail">0 records tracked</div>
+      </article>
+      <article class="panel">
+        <div class="stat-label">Workers Warm</div>
         <div id="warm-total" class="stat-value">0</div>
       </article>
       <article class="panel">
-        <div class="stat-label">Reserved</div>
-        <div id="reserved-total" class="stat-value">0</div>
+        <div class="stat-label">Workers Busy</div>
+        <div id="busy-total" class="stat-value">0</div>
       </article>
       <article class="panel">
-        <div class="stat-label">Other</div>
-        <div id="other-total" class="stat-value">0</div>
+        <div class="stat-label">Dead Records</div>
+        <div id="dead-total" class="stat-value">0</div>
       </article>
       <article class="panel">
         <div class="stat-label">Sessions</div>
@@ -499,47 +651,183 @@ async def dashboard() -> str:
 
     <section class="layout">
       <article class="panel">
+        <h2 class="column-title">Relay Fleet</h2>
+        <p class="column-subtitle">Routing targets with expandable relay to session to worker bindings.</p>
+        <div id="relays" class="list"></div>
+      </article>
+
+      <article class="panel">
+        <h2 class="column-title">Busy Workers</h2>
+        <p class="column-subtitle">Workers currently assigned to a relay and session.</p>
+        <div id="busy-workers" class="list"></div>
+      </article>
+
+      <article class="panel">
         <h2 class="column-title">Warm Workers</h2>
-        <p class="column-subtitle">Immediately available workers.</p>
+        <p class="column-subtitle">Immediately schedulable workers outside active media flows.</p>
         <div id="warm-workers" class="list"></div>
       </article>
 
       <article class="panel">
-        <h2 class="column-title">Reserved Workers</h2>
-        <p class="column-subtitle">Workers currently holding a session.</p>
-        <div id="reserved-workers" class="list"></div>
-      </article>
-
-      <article class="panel">
-        <h2 class="column-title">Other Workers</h2>
-        <p class="column-subtitle">Starting, active, dead, or unexpected states.</p>
-        <div id="other-workers" class="list"></div>
+        <h2 class="column-title">Dead Or Drift Workers</h2>
+        <p class="column-subtitle">Dead records remain visible until TTL expiry. Drift captures unexpected states.</p>
+        <div id="dead-workers" class="list"></div>
       </article>
 
       <article class="panel">
         <h2 class="column-title">Sessions</h2>
-        <p class="column-subtitle">Current session ownership and TTL.</p>
+        <p class="column-subtitle">The control-plane truth of client, relay, worker, and TTL ownership.</p>
         <div id="sessions" class="list"></div>
+      </article>
+
+      <article class="panel">
+        <h2 class="column-title">Redis Pulse</h2>
+        <p class="column-subtitle">Coordination-store memory, churn and lookup efficiency at a glance.</p>
+        <div id="redis" class="list"></div>
       </article>
     </section>
   </div>
 
   <script>
-    function renderWorkers(workers, variant) {
+    const openRelayIds = new Set();
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value || 0);
+      if (!Number.isFinite(bytes) || bytes <= 0) {
+        return '0 B';
+      }
+
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let size = bytes;
+      let unitIndex = 0;
+      while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex += 1;
+      }
+
+      const decimals = size >= 10 || unitIndex === 0 ? 0 : 1;
+      return `${size.toFixed(decimals)} ${units[unitIndex]}`;
+    }
+
+    function syncOpenRelayIds() {
+      document.querySelectorAll('[data-relay-details]').forEach((element) => {
+        const relayId = element.getAttribute('data-relay-details');
+        if (!relayId) {
+          return;
+        }
+
+        if (element.open) {
+          openRelayIds.add(relayId);
+        } else {
+          openRelayIds.delete(relayId);
+        }
+      });
+    }
+
+    function relayCapacityVariant(relay) {
+      const current = Number(relay.current_sessions || 0);
+      const max = Number(relay.max_sessions || 0);
+
+      if (relay.status !== 'warm' || (max > 0 && current >= max)) {
+        return 'relay-full';
+      }
+
+      if (current >= 8) {
+        return 'relay-hot';
+      }
+
+      if (current >= 5) {
+        return 'relay-warning';
+      }
+
+      return 'relay-healthy';
+    }
+
+    function renderRelays(relays) {
+      if (!relays.length) {
+        return '<div class="empty">No relay records available.</div>';
+      }
+
+      return relays.map((relay) => `
+        <article class="card relay-card ${relayCapacityVariant(relay)}">
+          <div class="card-head">
+            <div class="card-title">${escapeHtml(relay.relay_id)}</div>
+            <div class="badge">${escapeHtml(relay.status)}</div>
+          </div>
+          <div class="card-meta">
+            <div>Sessions: ${escapeHtml(relay.current_sessions)} / ${escapeHtml(relay.max_sessions)}</div>
+            <div>TTL: ${escapeHtml(relay.ttl_seconds)}s</div>
+            <div>Public: ${escapeHtml(relay.public_endpoint || '-')}</div>
+            <div>Internal: ${escapeHtml(relay.internal_endpoint)}</div>
+          </div>
+          <details data-relay-details="${escapeHtml(relay.relay_id)}" ${openRelayIds.has(relay.relay_id) ? 'open' : ''}>
+            <summary>Assigned sessions and workers</summary>
+            <div class="relay-session-list">
+              ${relay.sessions.length ? relay.sessions.map((session) => `
+                <div class="relay-session">
+                  <div>Session: ${escapeHtml(session.session_id)}</div>
+                  <div>Worker: ${escapeHtml(session.worker_id)}</div>
+                  <div>Client: ${escapeHtml(session.client_id)}</div>
+                  <div>Status: ${escapeHtml(session.status)}</div>
+                  <div>Relay recv: ${escapeHtml(formatBytes(session.relay_bytes))}</div>
+                  <div>Worker recv: ${escapeHtml(formatBytes(session.worker_bytes))}</div>
+                </div>
+              `).join('') : '<div class="empty">No active session bindings.</div>'}
+            </div>
+          </details>
+        </article>
+      `).join('');
+    }
+
+    function renderWorkers(workers, variantClass) {
       if (!workers.length) {
         return '<div class="empty">No workers in this state.</div>';
       }
 
       return workers.map((worker) => `
-        <article class="card ${variant}">
+        <article class="card ${variantClass}">
           <div class="card-head">
-            <div class="card-title">${worker.worker_id}</div>
-            <div class="badge">${worker.status}</div>
+            <div class="card-title">${escapeHtml(worker.worker_id)}</div>
+            <div class="badge">${escapeHtml(worker.status)}</div>
           </div>
           <div class="card-meta">
-            <div>Session: ${worker.assigned_session_id || '-'}</div>
-            <div>TTL: ${worker.ttl_seconds}s</div>
-            <div>Endpoint: ${worker.endpoint}</div>
+            <div>Session: ${escapeHtml(worker.assigned_session_id || '-')}</div>
+            <div>Relay: ${escapeHtml(worker.relay_id || '-')}</div>
+            <div>Worker recv: ${escapeHtml(formatBytes(worker.media_bytes))} in ${escapeHtml(worker.media_packets || 0)} packets</div>
+            <div>Relay recv: ${escapeHtml(formatBytes(worker.relay_received_bytes))} in ${escapeHtml(worker.relay_received_packets || 0)} packets</div>
+            <div>TTL: ${escapeHtml(worker.ttl_seconds)}s</div>
+            <div>Endpoint: ${escapeHtml(worker.endpoint)}</div>
+          </div>
+        </article>
+      `).join('');
+    }
+
+    function renderDeadWorkers(deadWorkers, driftWorkers) {
+      const workers = [...deadWorkers, ...driftWorkers];
+
+      if (!workers.length) {
+        return '<div class="empty">No dead or drift worker records.</div>';
+      }
+
+      return workers.map((worker) => `
+        <article class="card danger-card">
+          <div class="card-head">
+            <div class="card-title">${escapeHtml(worker.worker_id)}</div>
+            <div class="badge">${escapeHtml(worker.status)}</div>
+          </div>
+          <div class="card-meta">
+            <div>Session: ${escapeHtml(worker.assigned_session_id || '-')}</div>
+            <div>TTL until cleanup: ${escapeHtml(worker.ttl_seconds)}s</div>
+            <div>Endpoint: ${escapeHtml(worker.endpoint)}</div>
           </div>
         </article>
       `).join('');
@@ -553,16 +841,82 @@ async def dashboard() -> str:
       return sessions.map((session) => `
         <article class="card session-card">
           <div class="card-head">
-            <div class="card-title">${session.session_id}</div>
-            <div class="badge">${session.status}</div>
+            <div class="card-title">${escapeHtml(session.session_id)}</div>
+            <div class="badge">${escapeHtml(session.status)}</div>
           </div>
           <div class="card-meta">
-            <div>Client: ${session.client_id}</div>
-            <div>Worker: ${session.worker_id || '-'}</div>
-            <div>TTL: ${session.ttl_seconds}s</div>
+            <div>Client: ${escapeHtml(session.client_id)}</div>
+            <div>Relay: ${escapeHtml(session.relay_id || '-')}</div>
+            <div>Worker: ${escapeHtml(session.worker_id || '-')}</div>
+            <div>Relay recv: ${escapeHtml(formatBytes(session.relay_bytes))} in ${escapeHtml(session.relay_packets || 0)} packets</div>
+            <div>Worker recv: ${escapeHtml(formatBytes(session.worker_bytes))} in ${escapeHtml(session.worker_packets || 0)} packets</div>
+            <div>TTL: ${escapeHtml(session.ttl_seconds)}s</div>
           </div>
         </article>
       `).join('');
+    }
+
+    function renderRedis(redis) {
+      const totalLookups = Number(redis.keyspace_hits || 0) + Number(redis.keyspace_misses || 0);
+      const hitPercent = totalLookups > 0
+        ? Math.round((Number(redis.keyspace_hits || 0) / totalLookups) * 100)
+        : 0;
+      const hitRate = totalLookups > 0 ? `${hitPercent}%` : '-';
+      const db0 = redis.db0 || {};
+      const keyspaceText = typeof db0 === 'string'
+        ? db0
+        : `keys=${db0.keys || 0}, expires=${db0.expires || 0}, avg_ttl=${db0.avg_ttl || 0}`;
+      const usedMemory = parseFloat(String(redis.used_memory_human).replace(/[^\\d.]/g, '')) || 0;
+      const peakMemory = parseFloat(String(redis.peak_memory_human).replace(/[^\\d.]/g, '')) || 0;
+      const memoryPercent = peakMemory > 0 ? Math.min(100, Math.round((usedMemory / peakMemory) * 100)) : 0;
+      const expiredKeys = Number(redis.expired_keys || 0);
+      const expiredFill = Math.min(100, expiredKeys === 0 ? 4 : expiredKeys);
+      const hitClass = hitPercent >= 95 ? '' : (hitPercent >= 80 ? 'warn' : 'danger');
+      const memoryClass = memoryPercent >= 85 ? 'danger' : (memoryPercent >= 65 ? 'warn' : '');
+
+      return `
+        <article class="card redis-card">
+          <div class="card-head">
+            <div class="card-title">Redis ${escapeHtml(redis.version)}</div>
+            <div class="badge">${escapeHtml(redis.status)}</div>
+          </div>
+          <div class="metric-grid">
+            <div class="metric-bar">
+              <div class="metric-bar-head">
+                <span>Memory pressure</span>
+                <span>${escapeHtml(redis.used_memory_human)} / ${escapeHtml(redis.peak_memory_human)}</span>
+              </div>
+              <div class="metric-bar-track">
+                <div class="metric-bar-fill ${memoryClass}" style="width: ${memoryPercent}%"></div>
+              </div>
+            </div>
+            <div class="metric-bar">
+              <div class="metric-bar-head">
+                <span>Keyspace hit rate</span>
+                <span>${escapeHtml(hitRate)}</span>
+              </div>
+              <div class="metric-bar-track">
+                <div class="metric-bar-fill ${hitClass}" style="width: ${hitPercent}%"></div>
+              </div>
+            </div>
+            <div class="metric-bar">
+              <div class="metric-bar-head">
+                <span>Expiry churn</span>
+                <span>${escapeHtml(redis.expired_keys)} expired</span>
+              </div>
+              <div class="metric-bar-track">
+                <div class="metric-bar-fill warn" style="width: ${expiredFill}%"></div>
+              </div>
+            </div>
+          </div>
+          <div class="card-meta">
+            <div>Clients: ${escapeHtml(redis.connected_clients)}</div>
+            <div>Keyspace: ${escapeHtml(keyspaceText)}</div>
+            <div>Evicted keys: ${escapeHtml(redis.evicted_keys)}</div>
+            <div>Uptime: ${escapeHtml(redis.uptime_seconds)}s</div>
+          </div>
+        </article>
+      `;
     }
 
     function setIfChanged(elementId, value) {
@@ -581,27 +935,42 @@ async def dashboard() -> str:
 
     async function refreshDashboard() {
       try {
+        syncOpenRelayIds();
+
         const response = await fetch('/dashboard/state', { cache: 'no-store' });
         const state = await response.json();
+        const relayCapacityDetail = `${state.summary.relay_capacity_used} / ${state.summary.relay_capacity_total} sessions in use`;
+        const workerRecordDetail = `${state.summary.worker_record_total} records tracked | worker recv ${formatBytes(state.summary.worker_media_total_bytes)}`;
 
         setIfChanged('updated-at', state.updated_at);
-        setIfChanged('worker-total', state.summary.worker_total);
+        setIfChanged('relay-total', state.summary.relay_total);
+        setIfChanged('relay-capacity-detail', relayCapacityDetail);
+        setIfChanged('relay-warm-total', state.summary.relay_warm_total);
+        setIfChanged('relay-full-total', state.summary.relay_full_total);
+        setIfChanged('worker-total', state.summary.worker_live_total);
+        setIfChanged('worker-record-detail', workerRecordDetail);
         setIfChanged('warm-total', state.summary.warm_total);
-        setIfChanged('reserved-total', state.summary.reserved_total);
-        setIfChanged('other-total', state.summary.other_total);
+        setIfChanged('busy-total', state.summary.busy_total);
+        setIfChanged('dead-total', state.summary.dead_total);
         setIfChanged('session-total', state.summary.session_total);
 
+        setHtmlIfChanged('relays', renderRelays(state.relays));
+        setHtmlIfChanged('busy-workers', renderWorkers(state.busy_workers, 'busy-card'));
         setHtmlIfChanged('warm-workers', renderWorkers(state.warm_workers, 'warm-card'));
-        setHtmlIfChanged('reserved-workers', renderWorkers(state.reserved_workers, 'reserved-card'));
-        setHtmlIfChanged('other-workers', renderWorkers(state.other_workers, 'other-card'));
+        setHtmlIfChanged('dead-workers', renderDeadWorkers(state.dead_workers, state.drift_workers));
         setHtmlIfChanged('sessions', renderSessions(state.sessions));
+        setHtmlIfChanged('redis', renderRedis(state.redis));
+
+        document.querySelectorAll('[data-relay-details]').forEach((element) => {
+          element.ontoggle = syncOpenRelayIds;
+        });
       } catch (error) {
         setIfChanged('updated-at', 'refresh failed');
       }
     }
 
     refreshDashboard();
-    setInterval(refreshDashboard, 1200);
+    setInterval(refreshDashboard, 3000);
   </script>
 </body>
 </html>
