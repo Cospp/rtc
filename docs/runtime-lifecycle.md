@@ -345,3 +345,5 @@ Für den aktuellen Stand sind diese Signale entscheidend:
 - [architecture.md](architecture.md)
 - [kubernetes.md](kubernetes.md)
 - [../README.md](../README.md)
+- [relay-scaling-and-draining.md](relay-scaling-and-draining.md)
+- [observability-and-metrics.md](observability-and-metrics.md)

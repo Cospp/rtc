@@ -624,3 +624,5 @@ Dieses Dokument behauptet nicht:
 - [../README.md](../README.md)
 - [runtime-lifecycle.md](runtime-lifecycle.md)
 - [kubernetes.md](kubernetes.md)
+- [relay-scaling-and-draining.md](relay-scaling-and-draining.md)
+- [observability-and-metrics.md](observability-and-metrics.md)
