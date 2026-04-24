@@ -1,404 +1,276 @@
-# Kubernetes Operator Playbook
+# Kubernetes Guide
 
-## Überblick
+## Zweck
 
-Dieses Dokument beschreibt den Betrieb, das Debugging und die Ausführung des RTC-Systems auf Kubernetes mittels **k3d**.
+Dieses Dokument beschreibt den aktuellen Kubernetes- und k3d-Betrieb des Repositories.
 
-Abgedeckt werden:
+Es behandelt:
 
-* Cluster-Setup
-* Image-Management
-* Deployments
-* Debugging
-* Typische Fehlerbilder
+- den lokalen Clusteraufbau
+- die Rollen von Platform- und Media-Nodes
+- Deployment und Redeploy der Services
+- aktuelle Port- und Exposure-Regeln
 
-Dies ist **kein** konzeptioneller Einstieg, sondern ein **Operator-Runbook**.
+## Aktuelles Deployment-Modell
 
----
+Der lokale Cluster trennt bewusst zwischen:
 
-## Voraussetzungen
+- einem Platform-Node
+- mehreren Media-Nodes
 
-Benötigt werden:
+### Node-Rollen
 
-* Docker Desktop (laufend)
-* kubectl installiert
-* k3d installiert
+`scripts/reset.sh` erzeugt einen k3d-Cluster und labelt:
 
-Verifikation:
+- den Server-Node mit `rtc-role=platform`
+- alle Agent-Nodes mit `rtc-role=media`
 
-```
-docker --version
-kubectl version --client
-k3d version
-```
+### Komponenten im Cluster
 
----
+| Komponente | Deployment-Modell | Aufgabe |
+| --- | --- | --- |
+| `redis` | Deployment | zentraler Zustandsstore |
+| `session-control` | Deployment | Control Plane und REST-Einstieg |
+| `relay` | DaemonSet auf Media-Nodes | sessiongebundene Medienkante |
+| `worker` | Deployment | interne Session-Verarbeitung |
 
-## Cluster Setup
+Wichtig:
 
-### Cluster erstellen
+- Relay läuft nur auf Nodes mit `rtc-role=media`
+- Worker haben aktuell keinen Node-Selector und können im Cluster normal geschedult werden
 
-```
-k3d cluster create rtc --agents 2 -p "8080:30080@loadbalancer"
-```
+## Betriebsmodi
 
-### Erklärung
+Der Workflow kennt zwei Modi:
 
-* Erstellt einen Cluster mit Namen `rtc`
-* 1 Control-Plane Node
-* 2 Worker Nodes
-* Port-Mapping:
+- `RTC_DEPLOY_MODE=dev`
+- `RTC_DEPLOY_MODE=cloud`
 
-```
-localhost:8080 → NodePort 30080
-```
+### `dev`
 
----
+Im Dev-Modus:
 
-### Cluster verifizieren
+- veröffentlicht jeder Relay lokal erreichbare Host-Ports
+- `reset.sh` konfiguriert den k3d-Load-Balancer mit einem Port pro Media-Node
+- `deploy.sh` setzt die Relay-Environment-Variablen für lokale Endpunkt-Ankündigung
 
-```
-kubectl get nodes
-```
+Das Ziel ist:
 
-Erwartet:
+- die Media-Node-Idee lokal testbar zu machen
+- ohne echtes Cloud-Networking nachzubauen
 
-```
-k3d-rtc-server-0   Ready
-k3d-rtc-agent-0    Ready
-k3d-rtc-agent-1    Ready
-```
+### `cloud`
 
----
+Im Cloud-Modus:
 
-## Namespace Setup
+- wird die lokale `localhost`-Ankündigung nicht gesetzt
+- der Cluster verhält sich näher an einem echten Node-basierten Exposure-Modell
 
-```
-kubectl create namespace rtc
+## Vollständiger lokaler Aufbau
+
+Der empfohlene Einstieg ist:
+
+```bash
+./scripts/dev.sh
 ```
 
-Verifikation:
+`dev.sh` macht in dieser Reihenfolge:
 
-```
-kubectl get namespaces
-```
+1. Cleanup des lokalen Zustands
+2. Build von `session-control`, `worker` und `relay`
+3. Neuerstellung des k3d-Clusters
+4. Labeling der Nodes
+5. Import der Images in k3d
+6. Anwendung der Kubernetes-Manifeste
+7. Warten auf Deployments und DaemonSet
 
----
+### Wichtige Parameter
 
-## Image Management
-
-### Problem
-
-Kubernetes kann lokale Docker-Images nicht automatisch verwenden.
-
-### Lösung
-
-Images in den k3d-Cluster importieren:
-
-```
-k3d image import rtc-session-control:dev -c rtc
-k3d image import rtc-worker:dev -c rtc
+```bash
+MEDIA_NODE_COUNT=4 RTC_DEPLOY_MODE=dev ./scripts/dev.sh
+RTC_DEPLOY_MODE=cloud ./scripts/dev.sh
 ```
 
----
+Regeln:
 
-### Wann neu importieren?
+- `MEDIA_NODE_COUNT` muss mindestens `2` sein
+- `RTC_DEPLOY_MODE` muss `dev` oder `cloud` sein
 
-Bei jeder Änderung an:
+## Was `reset.sh` konkret macht
 
-* Code
-* Dockerfile
-* Build-Flags
+`scripts/reset.sh`:
 
----
+- löscht den bestehenden k3d-Cluster
+- erstellt einen neuen Cluster mit genau `MEDIA_NODE_COUNT` Agent-Nodes
+- mapped `localhost:8080` auf den `session-control`-NodePort
+- mapped im Dev-Modus zusätzliche Host-Ports auf die einzelnen Relay-Ports
+- labelt die Nodes als `platform` oder `media`
+- konfiguriert den k3d-Load-Balancer für den lokalen Relay-Zugriff
 
-## Deployments
+## Was `deploy.sh` konkret macht
 
-### Alle Manifeste anwenden
+`scripts/deploy.sh`:
 
-```
-kubectl apply -f k8s/
-```
+- wendet alle Manifeste in `k8s/` an
+- entfernt alte Legacy-Relay-Ressourcen
+- konfiguriert Relay-Environment-Variablen abhängig vom Deploy-Modus
+- wartet auf `redis`, `session-control`, `relay` und `worker`
 
----
+## Redeploy einzelner Komponenten
 
-### Einzelne Komponenten deployen
+Für schnelle Iteration:
 
-```
-kubectl apply -f k8s/redis.yaml
-kubectl apply -f k8s/session-control.yaml
-kubectl apply -f k8s/worker.yaml
-```
-
----
-
-## Systemkomponenten
-
-### Redis
-
-* Zentrale State-Komponente
-* Erreichbar innerhalb des Clusters unter:
-
-```
-redis:6379
+```bash
+./scripts/redeploy.sh session-control
+./scripts/redeploy.sh relay
+./scripts/redeploy.sh worker
+./scripts/redeploy.sh all
 ```
 
----
+`redeploy.sh`:
 
-### Session-Control
+- baut nur die gewählte Komponente neu
+- importiert ihr Image in den k3d-Cluster
+- stößt den Rollout für genau diese Komponente an
 
-* HTTP API
-* Über NodePort exponiert
+## Aktuelle Port- und Exposure-Regeln
 
-Zugriff:
+### `session-control`
 
+- Service-Typ: `NodePort`
+- Cluster-Port: `8000`
+- NodePort: `30080`
+- lokal erreichbar über: `http://localhost:8080`
+
+### `relay`
+
+Im Cluster:
+
+- Relay lauscht intern auf `8080`
+- Relay läuft als DaemonSet auf Media-Nodes
+- jeder Relay nutzt auf seinem Node `hostPort: 31080`
+
+Im Dev-Modus:
+
+- der Load-Balancer mappt `localhost:31080`, `localhost:31081`, ... auf die einzelnen Media-Nodes
+- `deploy.sh` setzt dazu `RELAY_PUBLIC_HOST_DEV=localhost`
+- zusätzlich wird `RELAY_PUBLIC_PORT_BASE` verwendet
+
+Das Ergebnis ist:
+
+- jeder Media-Node-Relay besitzt lokal einen eigenen Host-Port
+- `session-control` kann einen konkreten öffentlichen Relay-Endpunkt zurückgeben
+
+## Verifikation nach dem Deploy
+
+### Cluster und Node-Rollen
+
+```bash
+kubectl get nodes --show-labels
 ```
-http://localhost:8080/docs
+
+Erwartung:
+
+- ein Platform-Node
+- mindestens zwei Media-Nodes
+
+### Pods
+
+```bash
+kubectl get pods -n rtc -o wide
 ```
 
----
+Erwartung:
 
-### Worker
+- `redis` läuft
+- `session-control` läuft
+- `worker`-Pods laufen
+- pro Media-Node ein Relay-Pod läuft
 
-* Zustandslose Pods
-* Skalierung über `replicas`
-* Worker-ID entspricht dem Pod-Namen
+### Rollout-Status
 
----
-
-## Verifikation
-
-### Pods prüfen
-
-```
-kubectl get pods -n rtc
+```bash
+kubectl rollout status deployment/session-control -n rtc
+kubectl rollout status deployment/worker -n rtc
+kubectl rollout status daemonset/relay -n rtc
 ```
 
----
+### Erreichbarkeit
 
-### Services prüfen
-
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/docs
+curl http://localhost:31080/healthz
 ```
-kubectl get svc -n rtc
-```
 
----
+## Nützliche Betriebsbefehle
 
-### Erwarteter Zustand
+Logs:
 
-* redis → Running
-* session-control → Running
-* worker → mehrere Pods Running
-
----
-
-## Logs
-
-### Deployment-Logs
-
-```
+```bash
+kubectl logs -n rtc deployment/session-control
 kubectl logs -n rtc deployment/worker
+kubectl logs -n rtc daemonset/relay
 ```
 
-Hinweis: Zeigt standardmäßig nur **einen** Pod.
+Redis:
 
----
-
-### Logs eines spezifischen Pods
-
-```
-kubectl logs -n rtc <pod-name>
-```
-
----
-
-## Debugging
-
-### In einen Container wechseln
-
-```
+```bash
 kubectl exec -n rtc -it deployment/redis -- redis-cli
 ```
 
-Beispiel:
+Pod-Details:
 
-```
-SMEMBERS workers:warm
-```
-
----
-
-### Pod-Details anzeigen
-
-```
+```bash
 kubectl describe pod -n rtc <pod-name>
 ```
 
----
+## Typische Fehlerbilder
 
-### Logs bei Fehlern
-
-```
-kubectl logs -n rtc <pod-name>
-```
-
----
-
-## Rollout / Updates
-
-### Image neu bauen
-
-```
-docker build -t rtc-worker:dev -f worker/Dockerfile .
-```
-
----
-
-### Image neu importieren
-
-```
-k3d image import rtc-worker:dev -c rtc
-```
-
----
-
-### Deployment neu starten
-
-```
-kubectl rollout restart deployment/worker -n rtc
-```
-
----
-
-## Zugriff von außen
-
-* NodePort: `30080`
-* Host-Port: `8080`
-
-Zugriff:
-
-```
-http://localhost:8080
-```
-
----
-
-## Typische Fehler
-
-### ImagePullBackOff
-
-Ursache:
-
-* Image nicht importiert
-
-Lösung:
-
-```
-k3d image import <image> -c rtc
-```
-
----
-
-### Falscher Namespace
+### Zu wenige Media-Nodes
 
 Symptom:
 
-```
-kubectl get pods
-```
+- `dev.sh` oder `deploy.sh` bricht früh ab
 
-zeigt nichts
+Ursache:
 
-Lösung:
+- `MEDIA_NODE_COUNT` liegt unter dem Mindestwert
+- oder Media-Nodes wurden nicht korrekt gelabelt
 
-```
-kubectl get pods -n rtc
-```
+### Relay nicht erreichbar
 
----
+Symptom:
 
-### Service nicht erreichbar
+- `localhost:31080` oder weitere Relay-Ports antworten nicht
 
 Prüfen:
 
-```
-kubectl get svc -n rtc
-```
+- läuft das Relay-DaemonSet?
+- ist der Cluster im `dev`-Modus aufgebaut?
+- wurde der Load-Balancer durch `reset.sh` korrekt konfiguriert?
 
----
+### Session-Control erreichbar, Relay aber nicht
 
-### Redis nicht erreichbar
+Symptom:
 
-Stellen sicher, dass verwendet wird:
+- `http://localhost:8080/docs` geht
+- Relay-Healthz geht nicht
 
-```
-redis://redis:6379/0
-```
+Prüfen:
 
----
+- `kubectl get pods -n rtc -o wide`
+- `kubectl rollout status daemonset/relay -n rtc`
+- `kubectl logs -n rtc daemonset/relay`
 
-## Cluster Cleanup
+## Verhältnis zu Docker Compose
 
-### Cluster löschen
+Docker Compose bleibt für einen schnellen lokalen Software-Start nützlich, bildet aber das Media-Node-Modell nur eingeschränkt ab.
 
-```
-k3d cluster delete rtc
-```
+Für das echte Relay-/Media-Node-Denken ist der k3d-/Kubernetes-Weg die maßgebliche Referenz.
 
----
+## Verwandte Dokumente
 
-## Mentales Modell
-
-Vergleich:
-
-```
-docker compose → Container + Ports
-
-kubernetes →
-  Pod (Container)
-  Deployment (Skalierung)
-  Service (Netzwerk)
-```
-
----
-
-## Kurzreferenz (Cheat Sheet)
-
-```
-# Cluster
-k3d cluster create rtc --agents 2 -p "8080:30080@loadbalancer"
-
-# Namespace
-kubectl create namespace rtc
-
-# Images
-k3d image import rtc-session-control:dev -c rtc
-k3d image import rtc-worker:dev -c rtc
-
-# Deploy
-kubectl apply -f k8s/
-
-# Status
-kubectl get pods -n rtc
-kubectl get svc -n rtc
-
-# Logs
-kubectl logs -n rtc deployment/worker
-
-# Redis Debug
-kubectl exec -n rtc -it deployment/redis -- redis-cli
-
-# Restart
-kubectl rollout restart deployment/worker -n rtc
-
-# Cleanup
-k3d cluster delete rtc
-```
-
----
-
-## Fazit
-
-Dieses Runbook deckt den vollständigen lokalen Kubernetes-Betrieb für das RTC-System ab.
-
-Ziel ist ein reproduzierbarer, klar strukturierter Workflow für Entwicklung, Debugging und Validierung.
+- [architecture.md](architecture.md)
+- [runtime-lifecycle.md](runtime-lifecycle.md)
+- [../README.md](../README.md)

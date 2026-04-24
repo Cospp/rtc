@@ -25,6 +25,9 @@ class SessionRecord(BaseModel):
     stream_profile: str
     transport: str
     created_at: str
+    relay_id: str | None = None
+    relay_internal_endpoint: str | None = None
+    relay_public_endpoint: str | None = None
     worker_id: str | None = None
 
 
@@ -33,6 +36,8 @@ class SessionResponse(BaseModel):
     client_id: str
     status: SessionStatus
     ttl_seconds: int
+    relay_id: str | None = None
+    relay_public_endpoint: str | None = None
     worker_id: str | None = None
 
 
@@ -44,5 +49,8 @@ def build_session_record(request: SessionRequest) -> SessionRecord:
         stream_profile=request.stream_profile,
         transport=request.transport,
         created_at=utc_now_iso(),
+        relay_id=None,
+        relay_internal_endpoint=None,
+        relay_public_endpoint=None,
         worker_id=None,
     )

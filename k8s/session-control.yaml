@@ -23,6 +23,8 @@ spec:
               value: redis://redis:6379/0
             - name: KUBERNETES_NAMESPACE
               value: rtc
+            - name: RELAY_BIND_TIMEOUT_SECONDS
+              value: "2"
           ports:
             - containerPort: 8000
           readinessProbe:

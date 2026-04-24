@@ -1,356 +1,208 @@
-# RTC Streaming Plattform
-
-## Inhaltsverzeichnis
-
-* [Überblick](#überblick)
-* [Architektur](#architektur)
-* [Rollen](#rollen)
-* [Systemeigenschaften](#systemeigenschaften)
-* [Aktueller Stand](#aktueller-stand)
-* [Implementierte Funktionen](#implementierte-funktionen)
-* [Zentrale Konzepte](#zentrale-konzepte)
-* [Redis-Struktur](#redis-struktur)
-* [Projektstruktur](#projektstruktur)
-* [Quickstart (empfohlen)](#quickstart-empfohlen)
-* [Quickstart (Docker Compose)](#quickstart-docker-compose)
-* [API testen (Swagger UI)](#api-testen-swagger-ui)
-* [Redis Debugging](#redis-debugging)
-* [Lokaler Start (ohne Docker)](#lokaler-start-ohne-docker)
-* [Kubernetes (k3d)](#kubernetes-k3d)
-* [Wichtige Hinweise](#wichtige-hinweise)
-* [Aktuelle Einschränkungen](#aktuelle-einschränkungen)
-* [Nächste Schritte](#nächste-schritte)
-
----
+# RTC Streaming Platform
 
 ## Überblick
 
-Dieses Projekt implementiert eine experimentelle Plattform zur Annahme und Verarbeitung von Echtzeit-Streams.
+Dieses Repository enthält den aktuell funktionierenden Zwischenstand der Plattform:
 
-Der Fokus liegt aktuell auf dem Aufbau einer zustandsbasierten Control Plane, die:
+- `session-control` nimmt Sessions an und weist Ressourcen zu
+- `relay` ist die vorgelagerte Medienkante für eine Session
+- `worker` verarbeitet den intern weitergeleiteten Session-Stream
+- `redis` ist der verteilte Zustands- und Koordinationsstore
 
-* Client-Sessions erstellt und verwaltet
-* verfügbare Worker verwaltet
-* Worker atomar reserviert
-* inkonsistente Zustände selbständig bereinigt
+Der aktuelle Runtime-Pfad ist:
 
-Die eigentliche Medienverarbeitung (UDP / WebRTC) ist aktuell **nicht Bestandteil** des Systems.
+```text
+Client / Dummy Client
+  -> session-control
+     -> reserviert relay + worker
+     -> bindet die Session an relay
 
----
+Client / Dummy Client
+  -> relay
+     -> nimmt Ingest für die Session an
+     -> erneuert die Session-TTL während aktiver Datenzufuhr
+     -> leitet Payload intern an den gebundenen worker weiter
 
-## Architektur
-
-Das System besteht aktuell aus drei zentralen Komponenten:
-
-* `session_control`
-* `worker`
-* `redis`
-
-Datenfluss:
-
+worker
+  -> verarbeitet den Session-Ingest
+  -> schreibt Media-Statistiken nach Redis
 ```
-Client -> session_control -> Redis <- worker
-```
 
----
+Wichtig: Im aktuellen Stand ist der Relay noch kein RTC-/WebRTC-Endpunkt. Der implementierte Medienpfad ist ein interner, HTTP-basierter Ingest für Sessions und Dummy-Clients.
 
-## Rollen
+## Aktueller Systemfluss
 
-### session_control
+1. Ein Client fordert über `POST /sessions` bei `session-control` eine Session an.
+2. `session-control` reserviert atomar genau einen verfügbaren Relay und genau einen warmen Worker in Redis.
+3. `session-control` legt den Session-Record an und bindet die Session an den zugewiesenen Relay.
+4. Der Relay bindet die Session intern an den zugewiesenen Worker und markiert ihn aktiv.
+5. Ein Sender liefert Medienpayload an den Relay. Der Relay leitet die Payload an den Worker weiter und erneuert die Session-TTL, solange Ingest ankommt.
+6. Wenn kein Ingest mehr ankommt, läuft die Session-TTL aus. Relay und Worker räumen den Zustand anschließend wieder auf.
 
-Die Control Plane.
+## Services
+
+### `session-control`
 
 Verantwortung:
 
-* Entgegennahme von Session-Anfragen
-* Auswahl freier Worker
-* atomare Worker-Reservation (Redis Lua)
-* Speicherung von Session-Zuständen
+- öffentlicher REST-Einstiegspunkt
+- Session-Erstellung und Session-Reads
+- atomare Zuweisung von `relay + worker`
+- Persistenz des Session-Zustands in Redis
+- Bind-Aufruf an den zugewiesenen Relay
 
----
+Wichtige Funktionen:
 
-### worker
+- `POST /sessions`
+- `GET /sessions/{session_id}`
+- Redis-Lua-basierte Ressourcenreservierung
+- Rückgabe von `relay_id`, `relay_public_endpoint` und `worker_id`
 
-Die Worker-Komponente.
+### `relay`
 
 Verantwortung:
 
-* Registrierung in Redis
-* periodischer Heartbeat
-* Verwaltung des eigenen Zustands
-* automatische Freigabe bei abgelaufenen Sessions
+- Registrierung und Heartbeat in Redis
+- Kapazitäts- und Sessionverwaltung pro Relay
+- Annahme von sessiongebundenem Ingest
+- TTL-Erneuerung für aktive Sessions
+- interne Weiterleitung der Session-Payload an den gebundenen Worker
 
----
+Wichtige Funktionen:
 
-### redis
+- `GET /healthz`
+- `GET /readyz`
+- `POST /internal/v1/sessions/bind`
+- `POST /internal/v1/media/ingest/{session_id}`
+- Persistenz von `session-media-relay:{session_id}`
 
-Koordinations- und Zustandslayer.
+### `worker`
 
-Verwendung:
+Verantwortung:
 
-* Session-State (`session:<id>`)
-* Worker-State (`worker:<id>`)
-* Worker-Discovery (`workers:warm`)
-* TTL-basierte Liveness
+- Registrierung und Heartbeat in Redis
+- interner Session-Bind für Medienverarbeitung
+- Annahme von Relay-Ingest
+- Persistenz von workerseitigen Media-Statistiken
+- Freigabe eigener Session-Bindings, wenn Session-State ausläuft
 
----
+Wichtige Funktionen:
 
-## Systemeigenschaften
+- `GET /health`
+- `POST /internal/v1/media/bind/{session_id}`
+- `POST /internal/v1/media/ingest/{session_id}`
+- Persistenz von `session-media-worker:{session_id}`
 
-* Stateless Control Plane (`session_control`)
-* Ephemere Worker mit Self-Healing
-* Redis als zentraler Zustandsspeicher
-* deterministische Zustandsübergänge
-* TTL-basierte Konsistenz
+### `redis`
 
----
+Verantwortung:
 
-## Aktueller Stand
+- Quelle der Wahrheit für Session-, Relay- und Worker-Zustand
+- TTL-basierte Liveness
+- Scheduling-relevante Sets und Records
+- atomare Koordination über Lua für den kritischen Assignment-Pfad
 
-Das System ist funktional lauffähig und implementiert den vollständigen Worker-Lifecycle:
+Wichtige Keys:
 
-```
-warm -> reserved -> warm
-```
-
----
-
-## Implementierte Funktionen
-
-* FastAPI-basierter `session_control`
-* Redis-Anbindung (async)
-* Startup-Validierung (fail-fast bei Redis-Ausfall)
-* Health Endpoint (`/health`)
-* Metrics Endpoint (`/metrics`)
-* Session-Erstellung (`POST /sessions`)
-* TTL-basierte Session-Verwaltung
-* Worker-Registrierung und Heartbeat
-* Worker-Discovery über Redis Set (`workers:warm`)
-* atomare Worker-Reservation via Lua Script
-* Worker Self-Healing bei Session-Verlust
-
----
-
-## Zentrale Konzepte
-
-### Worker Lifecycle
-
-```
-warm -> reserved -> warm
-```
-
----
-
-### Atomare Worker-Reservation
-
-Die Zuweisung erfolgt über ein Redis Lua Script:
-
-1. Worker wird aus `workers:warm` entfernt (`SPOP`)
-2. Worker-State wird geprüft (`status == warm`)
-3. Worker wird auf `reserved` gesetzt
-4. `assigned_session_id` wird gesetzt
-
----
-
-### Session-Modell
-
-```
-session:<id> -> {
-  status: assigned,
-  worker_id: <worker_id>
-}
-```
-
----
-
-### Worker Self-Healing
-
-Worker prüfen im Heartbeat:
-
-```
-wenn status == reserved und session nicht existiert:
-    -> status = warm
-```
-
----
-
-### TTL Ownership
-
-* Worker besitzt die TTL
-* `session_control` verändert State ohne TTL
-* Lua Script nutzt `KEEPTTL`
-
----
-
-## Redis-Struktur
-
-```
-session:<session_id>
-worker:<worker_id>
+```text
+session:{session_id}
+relay:{relay_id}
+worker:{worker_id}
+session-media-relay:{session_id}
+session-media-worker:{session_id}
+relays:available
 workers:warm
 ```
 
----
+## Aktuell implementierter Funktionsumfang
 
-## Projektstruktur
+- Go-basierter Relay-Service mit Health, Readiness, Bind und Ingest
+- Relay-Deployment als DaemonSet auf Media-Nodes in Kubernetes
+- atomare Zuweisung von Relay und Worker in `session-control`
+- Session-Bind zwischen `session-control` und Relay
+- workerseitige Bind- und Ingest-Endpunkte für relayed Sessions
+- relay- und workerseitige Media-Statistiken in Redis
+- Dummy-Client für Session-Erstellung, Relay-Probing und Datei-Ingest
+- Stress-Skript für parallele Session- und Ingest-Last
+- Swagger unter `/docs`
+- einfaches Dashboard unter `/dashboard`
 
-```
-rtc/
-  session_control/
-  worker/
-  shared/
-  scripts/
-  k8s/
-  docs/
-```
+## Aktueller Stand und Grenzen
 
----
+Der aktuelle Repository-Stand bildet bewusst einen sauberen Zwischenstand:
 
-## Quickstart (empfohlen)
+- Sessions laufen bereits über `session-control -> relay -> worker`
+- Session-Liveness hängt an aktivem Ingest auf dem Relay
+- Worker bleiben interne Cluster-Komponenten
+- Relays sind noch keine RTC-fähigen Media-Nodes
 
-### Kubernetes (ein Command)
+Nicht im aktuellen Stand enthalten:
+
+- WebRTC-Signaling
+- SDP Offer/Answer
+- ICE, STUN oder TURN im Runtime-Pfad
+- Relay-Draining und Rolling-Update-Semantik
+- Dual-Ingest- oder Failover-Logik
+
+## Lokale Entwicklung
+
+### Kubernetes mit k3d
+
+Komplettaufbau:
 
 ```bash
 ./scripts/dev.sh
 ```
 
-Dieser Workflow:
+Wichtige Parameter:
 
-* bereinigt alte Zustände
-* baut Images
-* erstellt Cluster
-* deployt System
+```bash
+MEDIA_NODE_COUNT=4 RTC_DEPLOY_MODE=dev ./scripts/dev.sh
+RTC_DEPLOY_MODE=cloud ./scripts/dev.sh
+```
 
----
+Nützliche Redeploys:
 
-## Quickstart (Docker Compose)
+```bash
+./scripts/redeploy.sh relay
+./scripts/redeploy.sh worker
+./scripts/redeploy.sh session-control
+./scripts/redeploy.sh all
+```
+
+Zugriff im Standard-Setup:
+
+- Swagger: `http://localhost:8080/docs`
+- Dashboard: `http://localhost:8080/dashboard`
+- Relay-Health im Dev-Modus: `http://localhost:31080/healthz`, `http://localhost:31081/healthz`, ...
+
+### Docker Compose
+
+Für einen schnellen lokalen Compose-Start:
 
 ```bash
 docker compose up --build
 ```
 
-Stop:
+### Dummy Clients und Last
+
+Datei-Streaming:
 
 ```bash
-docker compose down
+python scripts/dummy_rtc_client.py "C:/Users/cosku/Desktop/cb.mp4"
 ```
 
----
-
-## API testen (Swagger UI)
-
-Docker Compose:
-
-```
-http://localhost:8000/docs
-```
-
-Kubernetes:
-
-```
-http://localhost:8080/docs
-```
-
----
-
-## Redis Debugging
+Mehrere parallele Clients:
 
 ```bash
-docker compose exec redis redis-cli
+./scripts/spawn_dummy_clients.sh 4 "C:/Users/cosku/Desktop/cb.mp4"
 ```
 
-```bash
-kubectl exec -n rtc -it deployment/redis -- redis-cli
-```
----
+## Weiterführende Dokumentation
 
-## Lokaler Start (ohne Docker)
-
-Redis:
-
-```bash
-docker run -p 6379:6379 redis:7
-```
-
----
-
-## Kubernetes (k3d)
-
-### Voraussetzungen
-
-* Docker
-* kubectl
-* k3d
-* Git Bash
-
----
-
-### Schnellstart
-
-```bash
-./scripts/dev.sh
-```
-
----
-
-### Zugriff
-
-```
-http://localhost:8080/docs
-```
-
----
-
-### Komponenten
-
-* redis
-* session-control
-* worker
-
----
-
-### Manifeste
-
-```
-k8s/
-```
-
----
-
-### Dokumentation
-
-```
-docs/kubernetes.md
-```
-
----
-
-## Wichtige Hinweise
-
-### Netzwerk
-
-| Kontext    | Host      |
-| ---------- | --------- |
-| Lokal      | localhost |
-| Docker     | redis     |
-| Kubernetes | redis     |
-
----
-
-## Aktuelle Einschränkungen
-
-1. Keine Medienverarbeitung
-2. Redis Single Instance
-3. Kein Autoscaling
-4. Keine Service Discovery
-
----
-
-## Nächste Schritte
-
-* Autoscaling
-* Relay Layer
-* UDP Streaming
-* WebRTC Integration
-
----
+- [docs/architecture.md](docs/architecture.md)
+  Detailliertes Zielbild, Architekturentscheidungen und Begründungen.
+- [docs/runtime-lifecycle.md](docs/runtime-lifecycle.md)
+  Laufzeitverhalten, TTL-Semantik, Cleanup, Draining und Failover-Modell.
+- [docs/kubernetes.md](docs/kubernetes.md)
+  Operativer Leitfaden für k3d, Deployments und Redeploys.

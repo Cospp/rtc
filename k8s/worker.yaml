@@ -4,7 +4,7 @@ metadata:
   name: worker
   namespace: rtc
 spec:
-  replicas: 60
+  replicas: 20
   selector:
     matchLabels:
       app: worker
@@ -21,6 +21,11 @@ spec:
           env:
             - name: REDIS_URL
               value: redis://redis:6379/0
+
+            - name: WORKER_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
 
             - name: WORKER_PORT
               value: "9000"
